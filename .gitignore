@@ -1,0 +1,27 @@
+# Build
+build/
+out/
+cmake-build-*/
+
+# Game data (user must supply their own)
+game/EBOOT.*
+game/USRDIR/
+game/Data/
+game/*.elf
+game/*.BIN
+
+# Generated recompiled code
+src/recomp/*.c
+src/recomp/*.cpp
+src/recomp/*.h
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store

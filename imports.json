@@ -1,0 +1,211 @@
+{
+  "game": "flOw",
+  "title_id": "NPUA80001",
+  "elf": "EBOOT.elf",
+  "total_libraries": 12,
+  "total_imports": 140,
+  "resolved": 139,
+  "resolution_pct": 99.3,
+  "libraries": {
+    "cellSysutil": {
+      "num_functions": 15,
+      "functions": [
+        {"nid": "0bae8772", "name": "cellVideoOutConfigure"},
+        {"nid": "189a74da", "name": "cellSysutilCheckCallback"},
+        {"nid": "40e895d3", "name": "cellSysutilGetSystemParamInt"},
+        {"nid": "4692ab35", "name": "cellAudioOutConfigure"},
+        {"nid": "62b0f803", "name": "cellMsgDialogAbort"},
+        {"nid": "7603d3db", "name": "cellMsgDialogOpen2"},
+        {"nid": "887572d5", "name": "cellVideoOutGetState"},
+        {"nid": "9117df20", "name": "cellHddGameCheck"},
+        {"nid": "9d98afa0", "name": "cellSysutilRegisterCallback"},
+        {"nid": "a4ed7dfe", "name": "cellSaveDataDelete"},
+        {"nid": "c01b4e7c", "name": "cellAudioOutGetSoundAvailability"},
+        {"nid": "c22c79b5", "name": "cellSaveDataAutoLoad"},
+        {"nid": "e558748d", "name": "cellVideoOutGetResolution"},
+        {"nid": "f81eca25", "name": "cellMsgDialogOpen"},
+        {"nid": "f8a175ec", "name": "cellSaveDataAutoSave"}
+      ]
+    },
+    "sys_net": {
+      "num_functions": 21,
+      "functions": [
+        {"nid": "051ee3ee", "name": "socketpoll"},
+        {"nid": "139a9e9b", "name": "sys_net_initialize_network_ex"},
+        {"nid": "13efe7f5", "name": "getsockname"},
+        {"nid": "1f953b9f", "name": "recvfrom"},
+        {"nid": "28e208bb", "name": "listen"},
+        {"nid": "3f09e20a", "name": "socketselect"},
+        {"nid": "5a045bd1", "name": "getsockopt"},
+        {"nid": "6005cde1", "name": "_sys_net_errno_loc"},
+        {"nid": "64f66d35", "name": "connect"},
+        {"nid": "6db6e8cd", "name": "socketclose"},
+        {"nid": "71f4c717", "name": "gethostbyname"},
+        {"nid": "88f03575", "name": "setsockopt"},
+        {"nid": "9647570b", "name": "sendto"},
+        {"nid": "9c056962", "name": "socket"},
+        {"nid": "a50777c6", "name": "shutdown"},
+        {"nid": "a9a079e0", "name": "inet_aton"},
+        {"nid": "b0a59804", "name": "bind"},
+        {"nid": "b68d5625", "name": "sys_net_finalize_network"},
+        {"nid": "c94f6939", "name": "accept"},
+        {"nid": "dc751b40", "name": "send"},
+        {"nid": "fba04f37", "name": "recv"}
+      ]
+    },
+    "cellGcmSys": {
+      "num_functions": 18,
+      "functions": [
+        {"nid": "055bd74d", "name": "cellGcmGetTiledPitchSize"},
+        {"nid": "15bae46b", "name": "_cellGcmInitBody"},
+        {"nid": "21ac3697", "name": "cellGcmAddressToOffset"},
+        {"nid": "3a33c1fd", "name": "_cellGcmFunc15"},
+        {"nid": "4ae8d215", "name": "cellGcmSetFlipMode"},
+        {"nid": "72a577ce", "name": "cellGcmGetFlipStatus"},
+        {"nid": "983fb9aa", "name": "cellGcmSetWaitFlip"},
+        {"nid": "a114ec67", "name": "cellGcmMapMainMemory"},
+        {"nid": "a53d12ae", "name": "cellGcmSetDisplayBuffer"},
+        {"nid": "a547adde", "name": "cellGcmGetControlRegister"},
+        {"nid": "a91b0402", "name": "cellGcmSetVBlankHandler"},
+        {"nid": "b2e761d4", "name": "cellGcmResetFlipStatus"},
+        {"nid": "bd6d60d9", "name": "cellGcmSetInvalidateTile"},
+        {"nid": "d0b1d189", "name": "cellGcmSetTile"},
+        {"nid": "d34a420d", "name": "cellGcmSetZcull"},
+        {"nid": "dc09357e", "name": "cellGcmSetFlip"},
+        {"nid": "e315a0b2", "name": "cellGcmGetConfiguration"},
+        {"nid": "f80196c1", "name": "cellGcmGetLabelAddress"}
+      ]
+    },
+    "sys_io": {
+      "num_functions": 17,
+      "functions": [
+        {"nid": "1cf98800", "name": "cellPadInit"},
+        {"nid": "2073b7f6", "name": "cellKbClearBuf"},
+        {"nid": "2f1774d5", "name": "cellKbGetInfo"},
+        {"nid": "3138e632", "name": "cellMouseGetData"},
+        {"nid": "3aaad464", "name": "cellPadGetInfo"},
+        {"nid": "3f797dff", "name": "cellPadGetRawData"},
+        {"nid": "433f6ec0", "name": "cellKbInit"},
+        {"nid": "4d9b75d5", "name": "cellPadEnd"},
+        {"nid": "5baf30fb", "name": "cellMouseGetInfo"},
+        {"nid": "78200559", "name": "cellPadInfoSensorMode"},
+        {"nid": "8b72cda1", "name": "cellPadGetData"},
+        {"nid": "a5f85e4d", "name": "cellKbSetCodeType"},
+        {"nid": "be5be3ba", "name": "cellPadSetSensorMode"},
+        {"nid": "bfce3285", "name": "cellKbEnd"},
+        {"nid": "c9030138", "name": "cellMouseInit"},
+        {"nid": "e10183ce", "name": "cellMouseEnd"},
+        {"nid": "ff0a21b7", "name": "cellKbRead"}
+      ]
+    },
+    "cellSysmodule": {
+      "num_functions": 4,
+      "functions": [
+        {"nid": "112a5ee9", "name": "cellSysmoduleUnloadModule"},
+        {"nid": "32267a31", "name": "cellSysmoduleLoadModule"},
+        {"nid": "63ff6ff9", "name": "cellSysmoduleInitialize"},
+        {"nid": "96c07adf", "name": "cellSysmoduleFinalize"}
+      ]
+    },
+    "cellSpurs": {
+      "num_functions": 14,
+      "functions": [
+        {"nid": "4e66d483", "name": "cellSpursDetachLv2EventQueue"},
+        {"nid": "57e4dec3", "name": "cellSpursRemoveWorkload"},
+        {"nid": "5fd43fe4", "name": "cellSpursWaitForWorkloadShutdown"},
+        {"nid": "69726aa2", "name": "cellSpursAddWorkload"},
+        {"nid": "7e4ea023", "name": "cellSpursWakeUp"},
+        {"nid": "98d5b343", "name": "cellSpursShutdownWorkload"},
+        {"nid": "acfc8dbc", "name": "cellSpursInitialize"},
+        {"nid": "b9bc6207", "name": "cellSpursAttachLv2EventQueue"},
+        {"nid": "ca4c4600", "name": "cellSpursFinalize"},
+        {"nid": "f843818d", "name": "cellSpursReadyCountStore"},
+        {"nid": "182d9890", "name": "cellSpursRequestIdleSpu"},
+        {"nid": "1f402f8f", "name": "cellSpursGetInfo"},
+        {"nid": "80a29e27", "name": "cellSpursSetPriorities"},
+        {"nid": "d2e23fa9", "name": "cellSpursSetExceptionEventHandler"}
+      ]
+    },
+    "cellNetCtl": {
+      "num_functions": 5,
+      "functions": [
+        {"nid": "04459230", "name": "cellNetCtlNetStartDialogLoadAsync"},
+        {"nid": "0f1f13d3", "name": "cellNetCtlNetStartDialogUnloadAsync"},
+        {"nid": "105ee2cb", "name": "cellNetCtlTerm"},
+        {"nid": "1e585b5d", "name": "cellNetCtlGetInfo"},
+        {"nid": "bd5a59fc", "name": "cellNetCtlInit"}
+      ]
+    },
+    "sys_fs": {
+      "num_functions": 11,
+      "functions": [
+        {"nid": "2cb51f0d", "name": "cellFsClose"},
+        {"nid": "3f61245c", "name": "cellFsOpendir"},
+        {"nid": "4d5ff8e2", "name": "cellFsRead"},
+        {"nid": "5c74903d", "name": "cellFsReaddir"},
+        {"nid": "718bf5f8", "name": "cellFsOpen"},
+        {"nid": "7f4677a8", "name": "cellFsUnlink"},
+        {"nid": "a397d042", "name": "cellFsLseek"},
+        {"nid": "aa3b4bcd", "name": "cellFsGetFreeSize"},
+        {"nid": "ecdcf2ab", "name": "cellFsWrite"},
+        {"nid": "ef3efa34", "name": "cellFsFstat"},
+        {"nid": "ff42dcc3", "name": "cellFsClosedir"}
+      ]
+    },
+    "cellAudio": {
+      "num_functions": 7,
+      "functions": [
+        {"nid": "0b168f92", "name": "cellAudioInit"},
+        {"nid": "4129fe2d", "name": "cellAudioPortClose"},
+        {"nid": "5b1e2c73", "name": "cellAudioPortStop"},
+        {"nid": "74a66af0", "name": "cellAudioGetPortConfig"},
+        {"nid": "89be28f2", "name": "cellAudioPortStart"},
+        {"nid": "ca5ac370", "name": "cellAudioQuit"},
+        {"nid": "cd7bc431", "name": "cellAudioPortOpen"}
+      ]
+    },
+    "cellSync": {
+      "num_functions": 3,
+      "functions": [
+        {"nid": "07254fda", "name": "cellSyncBarrierInitialize"},
+        {"nid": "35f21355", "name": "cellSyncBarrierWait"},
+        {"nid": "6c272124", "name": "cellSyncBarrierTryWait"}
+      ]
+    },
+    "sceNp": {
+      "num_functions": 10,
+      "functions": [
+        {"nid": "0968aa36", "name": "sceNpManagerGetTicket"},
+        {"nid": "4885aa18", "name": "sceNpTerm"},
+        {"nid": "7e2fef28", "name": "sceNpManagerRequestTicket"},
+        {"nid": "a7bff757", "name": "sceNpManagerGetStatus"},
+        {"nid": "bcc09fe7", "name": "sceNpBasicRegisterHandler"},
+        {"nid": "bd28fdbf", "name": "sceNpInit"},
+        {"nid": "d208f91d", "name": "sceNpUtilCmpNpId"},
+        {"nid": "e035f7d6", "name": "sceNpBasicGetEvent"},
+        {"nid": "e7dcd3b4", "name": "unknown_e7dcd3b4"},
+        {"nid": "fe37a7f4", "name": "sceNpManagerGetNpId"}
+      ]
+    },
+    "sysPrxForUser": {
+      "num_functions": 15,
+      "functions": [
+        {"nid": "1573dc3f", "name": "sys_lwmutex_lock"},
+        {"nid": "1bc200f4", "name": "sys_lwmutex_unlock"},
+        {"nid": "24a1ea07", "name": "sys_ppu_thread_create"},
+        {"nid": "2f85c0ef", "name": "sys_lwmutex_create"},
+        {"nid": "350d454e", "name": "sys_ppu_thread_get_id"},
+        {"nid": "4f7172c9", "name": "sys_process_is_stack"},
+        {"nid": "744680a2", "name": "sys_initialize_tls"},
+        {"nid": "8461e528", "name": "sys_time_get_system_time"},
+        {"nid": "a2c7ba64", "name": "sys_prx_exitspawn_with_level"},
+        {"nid": "aeb78725", "name": "sys_lwmutex_trylock"},
+        {"nid": "aff080a4", "name": "sys_ppu_thread_exit"},
+        {"nid": "c3476d0c", "name": "sys_lwmutex_destroy"},
+        {"nid": "e6f2c1e7", "name": "sys_process_exit"},
+        {"nid": "ebe5f72f", "name": "sys_spu_image_import"},
+        {"nid": "fc52a7a9", "name": "sys_game_process_exitspawn"}
+      ]
+    }
+  }
+}
