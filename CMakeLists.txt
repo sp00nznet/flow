@@ -64,6 +64,15 @@ file(GLOB_RECURSE RECOMP_SOURCES
     "src/recomp/*.cpp"
 )
 
+# If the recompiler has generated code, tell stubs.cpp to exclude placeholders
+if(RECOMP_SOURCES)
+    message(STATUS "Found recompiled sources (${CMAKE_CURRENT_SOURCE_DIR}/src/recomp/)")
+    set(FLOW_HAS_RECOMP TRUE)
+else()
+    message(STATUS "No recompiled sources found -- using stubs")
+    set(FLOW_HAS_RECOMP FALSE)
+endif()
+
 # ---------------------------------------------------------------------------
 # Main executable
 # ---------------------------------------------------------------------------
@@ -76,6 +85,7 @@ add_executable(flow
 target_include_directories(flow PRIVATE
     "${PS3RECOMP_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/recomp"
 )
 
 target_link_libraries(flow PRIVATE
@@ -86,6 +96,7 @@ target_link_libraries(flow PRIVATE
 target_compile_definitions(flow PRIVATE
     FLOW_GAME_DIR="${FLOW_GAME_DIR_OPT}"
     FLOW_TITLE_ID="NPUA80001"
+    $<$<BOOL:${FLOW_HAS_RECOMP}>:FLOW_HAS_RECOMP>
 )
 
 # ---------------------------------------------------------------------------

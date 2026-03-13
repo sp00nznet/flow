@@ -2,12 +2,12 @@
  * flOw Recomp -- Game-specific stubs and overrides
  *
  * This file provides:
- *   1. A placeholder recompiled function table (until the recompiler generates one)
+ *   1. A placeholder recompiled function table (when no generated code exists)
  *   2. A stub game entry point
  *   3. Game-specific NID overrides and patches for flOw (NPUA80001)
  *
- * Once the recompiler generates real code, the function table and entry point
- * in this file will be superseded by the generated versions.
+ * When the recompiler generates src/recomp/func_table.cpp, define
+ * FLOW_HAS_RECOMP in CMakeLists.txt to exclude the placeholders.
  */
 
 #include "config.h"
@@ -20,9 +20,12 @@
 /* ---------------------------------------------------------------------------
  * Placeholder recompiled function table
  *
- * The recompiler generates this in recomp/func_table.cpp.  This placeholder
- * lets the project link and run before any functions have been recompiled.
+ * These symbols are provided by the generated func_table.cpp once the
+ * recompiler has run.  The placeholders here let the project link and
+ * produce a runnable (stub) executable before any recompilation.
  * -----------------------------------------------------------------------*/
+
+#ifndef FLOW_HAS_RECOMP
 
 struct RecompiledFunc {
     uint32_t    guest_addr;
@@ -30,7 +33,6 @@ struct RecompiledFunc {
 };
 
 extern "C" const RecompiledFunc g_recompiled_funcs[] = {
-    /* { 0x00846AE0, recomp_func_00846AE0 }, */
     { 0, nullptr }   /* sentinel */
 };
 
@@ -43,8 +45,10 @@ extern "C" void recomp_game_main(void* ctx)
     printf("[stub] recomp_game_main called -- no recompiled code loaded yet\n");
     printf("[stub] Entry point would be 0x%X\n", FLOW_ENTRY_POINT);
     printf("[stub] Run the recompiler first:\n");
-    printf("[stub]   python tools/recompile.py game/EBOOT.elf\n");
+    printf("[stub]   python tools/recompile.py\n");
 }
+
+#endif /* !FLOW_HAS_RECOMP */
 
 /* ---------------------------------------------------------------------------
  * flOw-specific NID overrides
