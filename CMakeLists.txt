@@ -18,7 +18,8 @@ endif()
 # ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
-option(FLOW_GAME_DIR_OPT "Path to game data directory" "${CMAKE_CURRENT_SOURCE_DIR}/game")
+set(FLOW_GAME_DIR_OPT "${CMAKE_CURRENT_SOURCE_DIR}/game" CACHE PATH
+    "Path to game data directory")
 
 # ---------------------------------------------------------------------------
 # ps3recomp SDK location
@@ -38,15 +39,34 @@ message(STATUS "ps3recomp SDK: ${PS3RECOMP_DIR}")
 set(PS3RECOMP_RUNTIME_DIR "${PS3RECOMP_DIR}/build" CACHE PATH
     "Directory containing the pre-built ps3recomp_runtime library")
 
-if(EXISTS "${PS3RECOMP_RUNTIME_DIR}/libps3recomp_runtime.a" OR
-   EXISTS "${PS3RECOMP_RUNTIME_DIR}/ps3recomp_runtime.lib")
+# Check multiple possible library locations (single-config and multi-config builds)
+set(_PS3R_LIB_CANDIDATES
+    "${PS3RECOMP_RUNTIME_DIR}/ps3recomp_runtime.lib"
+    "${PS3RECOMP_RUNTIME_DIR}/Release/ps3recomp_runtime.lib"
+    "${PS3RECOMP_RUNTIME_DIR}/Debug/ps3recomp_runtime.lib"
+    "${PS3RECOMP_RUNTIME_DIR}/libps3recomp_runtime.a"
+)
+set(_PS3R_FOUND_LIB "")
+foreach(_lib ${_PS3R_LIB_CANDIDATES})
+    if(EXISTS "${_lib}")
+        set(_PS3R_FOUND_LIB "${_lib}")
+        break()
+    endif()
+endforeach()
+
+if(_PS3R_FOUND_LIB)
+    message(STATUS "Found ps3recomp runtime: ${_PS3R_FOUND_LIB}")
     add_library(ps3recomp_runtime STATIC IMPORTED GLOBAL)
-    if(WIN32)
+    set_target_properties(ps3recomp_runtime PROPERTIES
+        IMPORTED_LOCATION "${_PS3R_FOUND_LIB}")
+    # For MSVC multi-config, set per-config locations
+    if(EXISTS "${PS3RECOMP_RUNTIME_DIR}/Release/ps3recomp_runtime.lib")
         set_target_properties(ps3recomp_runtime PROPERTIES
-            IMPORTED_LOCATION "${PS3RECOMP_RUNTIME_DIR}/ps3recomp_runtime.lib")
-    else()
+            IMPORTED_LOCATION_RELEASE "${PS3RECOMP_RUNTIME_DIR}/Release/ps3recomp_runtime.lib")
+    endif()
+    if(EXISTS "${PS3RECOMP_RUNTIME_DIR}/Debug/ps3recomp_runtime.lib")
         set_target_properties(ps3recomp_runtime PROPERTIES
-            IMPORTED_LOCATION "${PS3RECOMP_RUNTIME_DIR}/libps3recomp_runtime.a")
+            IMPORTED_LOCATION_DEBUG "${PS3RECOMP_RUNTIME_DIR}/Debug/ps3recomp_runtime.lib")
     endif()
     target_include_directories(ps3recomp_runtime INTERFACE
         "${PS3RECOMP_DIR}/include")
@@ -85,6 +105,7 @@ add_executable(flow
 
 target_include_directories(flow PRIVATE
     "${PS3RECOMP_DIR}/include"
+    "${PS3RECOMP_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/recomp"
 )

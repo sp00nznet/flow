@@ -117,7 +117,7 @@ bool elf_load_segments(const char* elf_path)
 {
     FILE* fp = fopen(elf_path, "rb");
     if (!fp) {
-        fprintf(stderr, "[elf_loader] Cannot open: %s\n", elf_path);
+        /* Silently return false — caller will print the warning */
         return false;
     }
 
