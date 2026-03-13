@@ -15,6 +15,9 @@ src/recomp/*.c
 src/recomp/*.cpp
 src/recomp/*.h
 
+# Recompiler output (if placed outside src/recomp/)
+recompiled/
+
 # IDE
 .vs/
 .vscode/

@@ -22,7 +22,10 @@
 #define FLOW_ENTRY_POINT    0x846AE0
 
 /* Memory layout */
-#define FLOW_MAIN_MEM_SIZE  (256 * 1024 * 1024)  /* 256 MB XDR */
-#define FLOW_STACK_SIZE     (1 * 1024 * 1024)     /* 1 MB default stack */
+#define FLOW_MAIN_MEM_SIZE  (256ULL * 1024 * 1024)  /* 256 MB XDR */
+#define FLOW_STACK_SIZE     (1 * 1024 * 1024)        /* 1 MB default stack */
+
+/* Threading */
+#define FLOW_MAX_PPU_THREADS 64
 
 #endif /* FLOW_CONFIG_H */

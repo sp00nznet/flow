@@ -1,0 +1,56 @@
+# flOw (NPUA80001) -- Recompiler configuration
+#
+# Used by: python tools/recompile.py --config config.toml
+
+[input]
+elf_path = "game/EBOOT.elf"
+# sfo_path = "game/PARAM.SFO"
+
+[output]
+output_dir = "src/recomp/"
+func_prefix = "recomp_"
+generate_func_table = true
+
+[modules]
+# All 12 imported libraries -- use HLE stubs from ps3recomp
+cellGcmSys       = "hle"
+cellSysutil      = "hle"
+sysPrxForUser    = "hle"
+sys_net          = "hle"
+sys_io           = "hle"
+cellSpurs        = "hle"
+sys_fs           = "hle"
+sceNp            = "hle"
+cellAudio        = "hle"
+cellNetCtl       = "hle"
+cellSysmodule    = "hle"
+cellSync         = "hle"
+
+[memory]
+main_ram_mb = 256
+vram_mb = 256
+thread_stack_kb = 1024
+
+[threading]
+max_ppu_threads = 64
+max_spu_threads = 6
+use_host_threads = true
+
+[graphics]
+backend = "d3d12"
+width = 1920
+height = 1080
+vsync = "on"
+scale_factor = 1
+
+[audio]
+backend = "wasapi"
+sample_rate = 48000
+buffer_size = 512
+
+[debug]
+log_hle_calls = true
+log_missing_nids = true
+break_on_unimplemented = false
+dump_disassembly = false
+breakpoint_address = 0

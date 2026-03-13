@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(flow_recomp
     VERSION 0.1.0
     LANGUAGES C CXX
-    DESCRIPTION "flOw - Static recompilation of the PS3 game"
+    DESCRIPTION "flOw - Static recompilation of the PS3 game (NPUA80001)"
 )
 
 set(CMAKE_C_STANDARD 17)
@@ -10,21 +10,50 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Prefer Ninja if available
+if(NOT CMAKE_GENERATOR MATCHES "Ninja" AND NOT DEFINED ENV{CMAKE_GENERATOR})
+    message(STATUS "Tip: use -G Ninja for faster builds")
+endif()
+
 # ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
-option(FLOW_GAME_DIR "Path to game data directory" "${CMAKE_CURRENT_SOURCE_DIR}/game")
+option(FLOW_GAME_DIR_OPT "Path to game data directory" "${CMAKE_CURRENT_SOURCE_DIR}/game")
 
 # ---------------------------------------------------------------------------
-# ps3recomp runtime
+# ps3recomp SDK location
 # ---------------------------------------------------------------------------
-# Either find it installed or point to a local build
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../ps3/CMakeLists.txt")
-    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../ps3" ps3recomp_build EXCLUDE_FROM_ALL)
-    set(PS3RECOMP_TARGET ps3recomp_runtime)
+# Set PS3RECOMP_DIR to the root of your ps3recomp checkout, or pass it on
+# the command line:   cmake -DPS3RECOMP_DIR=/path/to/ps3recomp ..
+if(NOT DEFINED PS3RECOMP_DIR)
+    # Default: assume ps3recomp is a sibling directory (../ps3)
+    get_filename_component(PS3RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ps3" ABSOLUTE)
+endif()
+message(STATUS "ps3recomp SDK: ${PS3RECOMP_DIR}")
+
+# ---------------------------------------------------------------------------
+# ps3recomp runtime library
+# ---------------------------------------------------------------------------
+# If the runtime has already been built, use it.  Otherwise, build from source.
+set(PS3RECOMP_RUNTIME_DIR "${PS3RECOMP_DIR}/build" CACHE PATH
+    "Directory containing the pre-built ps3recomp_runtime library")
+
+if(EXISTS "${PS3RECOMP_RUNTIME_DIR}/libps3recomp_runtime.a" OR
+   EXISTS "${PS3RECOMP_RUNTIME_DIR}/ps3recomp_runtime.lib")
+    add_library(ps3recomp_runtime STATIC IMPORTED GLOBAL)
+    if(WIN32)
+        set_target_properties(ps3recomp_runtime PROPERTIES
+            IMPORTED_LOCATION "${PS3RECOMP_RUNTIME_DIR}/ps3recomp_runtime.lib")
+    else()
+        set_target_properties(ps3recomp_runtime PROPERTIES
+            IMPORTED_LOCATION "${PS3RECOMP_RUNTIME_DIR}/libps3recomp_runtime.a")
+    endif()
+    target_include_directories(ps3recomp_runtime INTERFACE
+        "${PS3RECOMP_DIR}/include")
 else()
-    find_package(ps3recomp_runtime REQUIRED)
-    set(PS3RECOMP_TARGET ps3recomp_runtime)
+    message(STATUS "Building ps3recomp runtime from source")
+    add_subdirectory("${PS3RECOMP_DIR}" "${CMAKE_BINARY_DIR}/ps3recomp_sdk"
+                     EXCLUDE_FROM_ALL)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -40,20 +69,22 @@ file(GLOB_RECURSE RECOMP_SOURCES
 # ---------------------------------------------------------------------------
 add_executable(flow
     src/main.cpp
+    src/stubs.cpp
     ${RECOMP_SOURCES}
 )
 
 target_include_directories(flow PRIVATE
+    "${PS3RECOMP_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
 target_link_libraries(flow PRIVATE
-    ${PS3RECOMP_TARGET}
+    ps3recomp_runtime
 )
 
 # Pass game data path as a compile definition
 target_compile_definitions(flow PRIVATE
-    FLOW_GAME_DIR="${FLOW_GAME_DIR}"
+    FLOW_GAME_DIR="${FLOW_GAME_DIR_OPT}"
     FLOW_TITLE_ID="NPUA80001"
 )
 
@@ -62,14 +93,19 @@ target_compile_definitions(flow PRIVATE
 # ---------------------------------------------------------------------------
 if(WIN32)
     target_link_libraries(flow PRIVATE
-        ws2_32 xinput ole32 d3d12 dxgi
+        ws2_32 xinput ole32 bcrypt d3d12 dxgi
     )
 endif()
 
 # ---------------------------------------------------------------------------
 # Compiler flags
 # ---------------------------------------------------------------------------
-if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(flow PRIVATE
+        -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable
+        -fno-strict-aliasing
+    )
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     target_compile_options(flow PRIVATE
         -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable
         -fno-strict-aliasing
@@ -91,7 +127,8 @@ install(TARGETS flow RUNTIME DESTINATION bin)
 
 message(STATUS "")
 message(STATUS "flOw recomp v${PROJECT_VERSION}")
-message(STATUS "  Game dir:     ${FLOW_GAME_DIR}")
+message(STATUS "  Game dir:     ${FLOW_GAME_DIR_OPT}")
+message(STATUS "  ps3recomp:    ${PS3RECOMP_DIR}")
 message(STATUS "  C++ compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "  Build type:   ${CMAKE_BUILD_TYPE}")
 message(STATUS "")
