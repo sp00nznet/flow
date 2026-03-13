@@ -7,6 +7,7 @@
  */
 
 #include "config.h"
+#include "elf_loader.h"
 
 #include <ps3emu/ps3types.h>
 #include <ps3emu/error_codes.h>
@@ -116,10 +117,18 @@ int main(int argc, char* argv[])
     snprintf(g_sys_fs_root, sizeof(g_sys_fs_root), "%s", game_dir);
     printf("[init] Filesystem root: %s\n", g_sys_fs_root);
 
-    /* 5. Load recompiled function table. */
+    /* 5. Load ELF data segments into virtual memory. */
+    char elf_path[512];
+    snprintf(elf_path, sizeof(elf_path), "%s/EBOOT.elf", game_dir);
+    if (!elf_load_segments(elf_path)) {
+        printf("[init] Warning: Could not load ELF segments from %s\n", elf_path);
+        printf("[init] Recompiled code may crash if it accesses global data\n");
+    }
+
+    /* 6. Load recompiled function table. */
     printf("[init] Loaded %zu recompiled functions\n", g_recompiled_func_count);
 
-    /* 6. Create the main PPU thread and enter the game's main(). */
+    /* 7. Create the main PPU thread and enter the game's main(). */
     printf("[init] Creating main PPU thread (stack %u KB)...\n",
            FLOW_STACK_SIZE / 1024);
 
@@ -134,10 +143,10 @@ int main(int argc, char* argv[])
     printf("[init] Main thread ID: %llu -- entering game at 0x%X\n\n",
            (unsigned long long)main_tid, FLOW_ENTRY_POINT);
 
-    /* 7. Wait for the main thread to finish. */
+    /* 8. Wait for the main thread to finish. */
     ps3::thread::join_thread(main_tid);
 
-    /* 8. Cleanup. */
+    /* 9. Cleanup. */
     printf("\n[exit] flOw has exited. Shutting down...\n");
     ps3::modules::shutdown();
     ps3::thread::shutdown();

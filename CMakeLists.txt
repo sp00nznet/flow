@@ -79,6 +79,7 @@ endif()
 add_executable(flow
     src/main.cpp
     src/stubs.cpp
+    src/elf_loader.cpp
     ${RECOMP_SOURCES}
 )
 
