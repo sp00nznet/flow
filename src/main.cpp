@@ -60,6 +60,7 @@ struct RecompiledFunc {
 extern "C" const RecompiledFunc g_recompiled_funcs[];
 extern "C" const size_t         g_recompiled_func_count;
 extern "C" void recomp_game_main(void* ctx);
+extern "C" void flow_register_hle_modules(void);
 
 /* ---------------------------------------------------------------------------
  * Banner
@@ -104,7 +105,10 @@ int main(int argc, char* argv[])
     lv2_syscall_table_init(&g_lv2_syscalls);
     lv2_register_all_syscalls(&g_lv2_syscalls);
 
-    /* 3. Set up filesystem path mapping. */
+    /* 3. Register HLE modules (NID-based import resolution). */
+    flow_register_hle_modules();
+
+    /* 4. Set up filesystem path mapping. */
     snprintf(g_sys_fs_root, sizeof(g_sys_fs_root), "%s", game_dir);
     printf("[init] Filesystem root: %s\n", g_sys_fs_root);
 
@@ -135,6 +139,7 @@ int main(int argc, char* argv[])
     }
 
     ctx.cia = FLOW_ENTRY_POINT;
+    ctx.gpr[2] = 0x008969A8;  /* TOC base from OPD analysis */
 
     printf("[init] Entering game at 0x%X...\n\n", FLOW_ENTRY_POINT);
 

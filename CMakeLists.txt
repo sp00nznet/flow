@@ -101,6 +101,7 @@ add_executable(flow
     src/stubs.cpp
     src/elf_loader.cpp
     src/vm_bridge.cpp
+    src/hle_modules.cpp
     ${RECOMP_SOURCES}
 )
 
