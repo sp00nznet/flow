@@ -22,6 +22,10 @@ static inline uint64_t bswap64(uint64_t v) { return __builtin_bswap64(v); }
 /* vm_base is defined in main.cpp with C linkage and set by vm_init() */
 extern "C" uint8_t* vm_base;
 
+/* Module registry -- must be defined by the game project */
+#include "ps3emu/module.h"
+ps3_module_registry g_ps3_module_registry = {};
+
 static inline uint8_t* translate(uint64_t addr) {
     return vm_base + (uint32_t)addr;
 }
@@ -67,11 +71,6 @@ void vm_write32(uint64_t addr, uint32_t val) {
 void vm_write64(uint64_t addr, uint64_t val) {
     uint64_t raw = bswap64(val);
     memcpy(translate(addr), &raw, 8);
-}
-
-/* Syscall dispatch stub */
-void lv2_syscall(void* ctx) {
-    fprintf(stderr, "[recomp] lv2_syscall called (stub)\n");
 }
 
 } /* extern "C" */
