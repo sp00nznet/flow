@@ -1,0 +1,657 @@
+{
+  "file": "EBOOT.elf",
+  "file_size": 10140464,
+  "elf_header": {
+    "class": "64-bit",
+    "endian": "Big Endian",
+    "type": "EXEC",
+    "machine": "PPC",
+    "entry_point": "0x00846ae0",
+    "flags": "0x00000000",
+    "phnum": 8,
+    "shnum": 34
+  },
+  "segments": [
+    {
+      "index": 0,
+      "type": "LOAD",
+      "flags": "R-X",
+      "vaddr": "0x00010000",
+      "offset": "0x00000000",
+      "filesz": 8423072,
+      "memsz": 8423072,
+      "label": "text"
+    },
+    {
+      "index": 1,
+      "type": "LOAD",
+      "flags": "RW-",
+      "vaddr": "0x00820000",
+      "offset": "0x00810000",
+      "filesz": 482516,
+      "memsz": 482516,
+      "label": "data"
+    },
+    {
+      "index": 2,
+      "type": "LOAD",
+      "flags": "R--",
+      "vaddr": "0x10000000",
+      "offset": "0x00890000",
+      "filesz": 246973,
+      "memsz": 246973,
+      "label": "rodata"
+    },
+    {
+      "index": 3,
+      "type": "LOAD",
+      "flags": "RW-",
+      "vaddr": "0x10040000",
+      "offset": "0x008d0000",
+      "filesz": 858752,
+      "memsz": 3409264,
+      "label": "data+bss"
+    },
+    {
+      "index": 4,
+      "type": "LOAD",
+      "flags": "RW-",
+      "vaddr": "0x00000000",
+      "offset": "0x009a1a80",
+      "filesz": 0,
+      "memsz": 0,
+      "label": "data"
+    },
+    {
+      "index": 5,
+      "type": "TLS",
+      "flags": "R--",
+      "vaddr": "0x00895cd0",
+      "offset": "0x00885cd0",
+      "filesz": 4,
+      "memsz": 476,
+      "label": "tls"
+    },
+    {
+      "index": 6,
+      "type": "PROC_PARAM",
+      "flags": "---",
+      "vaddr": "0x00818658",
+      "offset": "0x00808658",
+      "filesz": 32,
+      "memsz": 32,
+      "label": "proc_param"
+    },
+    {
+      "index": 7,
+      "type": "PROC_PRX",
+      "flags": "---",
+      "vaddr": "0x00818678",
+      "offset": "0x00808678",
+      "filesz": 40,
+      "memsz": 40,
+      "label": "proc_prx"
+    }
+  ],
+  "sections": [
+    {
+      "index": 1,
+      "name": ".init",
+      "type": "PROGBITS",
+      "addr": "0x00010200",
+      "offset": "0x00000200",
+      "size": 44
+    },
+    {
+      "index": 2,
+      "name": ".text",
+      "type": "PROGBITS",
+      "addr": "0x00010230",
+      "offset": "0x00000230",
+      "size": 8413832
+    },
+    {
+      "index": 3,
+      "name": ".text.fini",
+      "type": "PROGBITS",
+      "addr": "0x008164b8",
+      "offset": "0x008064b8",
+      "size": 36
+    },
+    {
+      "index": 4,
+      "name": ".stub_code",
+      "type": "PROGBITS",
+      "addr": "0x008164dc",
+      "offset": "0x008064dc",
+      "size": 4480
+    },
+    {
+      "index": 5,
+      "name": ".rodata.sceResident",
+      "type": "PROGBITS",
+      "addr": "0x0081765c",
+      "offset": "0x0080765c",
+      "size": 2804
+    },
+    {
+      "index": 6,
+      "name": ".lib.stub",
+      "type": "PROGBITS",
+      "addr": "0x00818150",
+      "offset": "0x00808150",
+      "size": 184
+    },
+    {
+      "index": 7,
+      "name": ".fnid",
+      "type": "PROGBITS",
+      "addr": "0x00818208",
+      "offset": "0x00808208",
+      "size": 560
+    },
+    {
+      "index": 8,
+      "name": ".vnid",
+      "type": "PROGBITS",
+      "addr": "0x00818438",
+      "offset": "0x00808438",
+      "size": 4
+    },
+    {
+      "index": 9,
+      "name": ".vstub",
+      "type": "PROGBITS",
+      "addr": "0x0081843c",
+      "offset": "0x0080843c",
+      "size": 4
+    },
+    {
+      "index": 10,
+      "name": ".bnid",
+      "type": "PROGBITS",
+      "addr": "0x00818440",
+      "offset": "0x00808440",
+      "size": 4
+    },
+    {
+      "index": 11,
+      "name": ".data.sceFStub",
+      "type": "PROGBITS",
+      "addr": "0x00818444",
+      "offset": "0x00808444",
+      "size": 528
+    },
+    {
+      "index": 12,
+      "name": ".rodata.sceProcess",
+      "type": "PROGBITS",
+      "addr": "0x00818654",
+      "offset": "0x00808654",
+      "size": 4
+    },
+    {
+      "index": 13,
+      "name": ".sys_proc_param",
+      "type": "PROGBITS",
+      "addr": "0x00818658",
+      "offset": "0x00808658",
+      "size": 32
+    },
+    {
+      "index": 14,
+      "name": ".sys_proc_prx_param",
+      "type": "PROGBITS",
+      "addr": "0x00818678",
+      "offset": "0x00808678",
+      "size": 40
+    },
+    {
+      "index": 15,
+      "name": ".got.plt",
+      "type": "PROGBITS",
+      "addr": "0x00820000",
+      "offset": "0x00810000",
+      "size": 672
+    },
+    {
+      "index": 16,
+      "name": ".got",
+      "type": "PROGBITS",
+      "addr": "0x008202a0",
+      "offset": "0x008102a0",
+      "size": 592
+    },
+    {
+      "index": 17,
+      "name": ".ctors",
+      "type": "PROGBITS",
+      "addr": "0x008204f0",
+      "offset": "0x008104f0",
+      "size": 4
+    },
+    {
+      "index": 18,
+      "name": ".data",
+      "type": "PROGBITS",
+      "addr": "0x008204f4",
+      "offset": "0x008104f4",
+      "size": 29300
+    },
+    {
+      "index": 19,
+      "name": ".data.sceFStub.ptr",
+      "type": "PROGBITS",
+      "addr": "0x00827768",
+      "offset": "0x00817768",
+      "size": 560
+    },
+    {
+      "index": 20,
+      "name": ".bss_like_data",
+      "type": "PROGBITS",
+      "addr": "0x00827998",
+      "offset": "0x00817998",
+      "size": 127288
+    },
+    {
+      "index": 21,
+      "name": ".opd",
+      "type": "PROGBITS",
+      "addr": "0x00846ad0",
+      "offset": "0x00836ad0",
+      "size": 294616
+    },
+    {
+      "index": 22,
+      "name": ".data.2",
+      "type": "PROGBITS",
+      "addr": "0x0088e9a8",
+      "offset": "0x0087e9a8",
+      "size": 29476
+    },
+    {
+      "index": 23,
+      "name": ".tdata",
+      "type": "PROGBITS",
+      "addr": "0x00895cd0",
+      "offset": "0x00885cd0",
+      "size": 4
+    },
+    {
+      "index": 24,
+      "name": ".tbss",
+      "type": "NOBITS",
+      "addr": "0x00895cd8",
+      "offset": "0x00885cd4",
+      "size": 468
+    },
+    {
+      "index": 25,
+      "name": ".rodata",
+      "type": "PROGBITS",
+      "addr": "0x10000000",
+      "offset": "0x00890000",
+      "size": 246973
+    },
+    {
+      "index": 26,
+      "name": ".data.large",
+      "type": "PROGBITS",
+      "addr": "0x10040000",
+      "offset": "0x008d0000",
+      "size": 846804
+    },
+    {
+      "index": 27,
+      "name": ".data.empty",
+      "type": "PROGBITS",
+      "addr": "0x1010ebd8",
+      "offset": "0x0099ebd8",
+      "size": 0
+    },
+    {
+      "index": 28,
+      "name": ".data.rel",
+      "type": "PROGBITS",
+      "addr": "0x1010ec00",
+      "offset": "0x0099ec00",
+      "size": 11904
+    },
+    {
+      "index": 29,
+      "name": ".bss",
+      "type": "NOBITS",
+      "addr": "0x10111a80",
+      "offset": "0x00000000",
+      "size": 0
+    },
+    {
+      "index": 30,
+      "name": ".bss",
+      "type": "NOBITS",
+      "addr": "0x10111a80",
+      "offset": "0x009a1a80",
+      "size": 2550512
+    },
+    {
+      "index": 31,
+      "name": "sec_31",
+      "type": "PROGBITS",
+      "addr": "0x00000000",
+      "offset": "0x009a1a80",
+      "size": 32778
+    },
+    {
+      "index": 32,
+      "name": "sec_32",
+      "type": "PROGBITS",
+      "addr": "0x00000000",
+      "offset": "0x009a9a8a",
+      "size": 5834
+    },
+    {
+      "index": 33,
+      "name": "sec_33",
+      "type": "STRTAB",
+      "addr": "0x00000000",
+      "offset": "0x009ab154",
+      "size": 341
+    }
+  ],
+  "memory_map": [
+    {
+      "start": "0x00010000",
+      "end": "0x008186a0",
+      "flags": "R-X",
+      "label": "text",
+      "size": 8423072
+    },
+    {
+      "start": "0x00820000",
+      "end": "0x00895cd4",
+      "flags": "RW-",
+      "label": "data",
+      "size": 482516
+    },
+    {
+      "start": "0x10000000",
+      "end": "0x1003c4bd",
+      "flags": "R--",
+      "label": "rodata",
+      "size": 246973
+    },
+    {
+      "start": "0x10040000",
+      "end": "0x10380570",
+      "flags": "RW-",
+      "label": "data+bss",
+      "size": 3409264
+    }
+  ],
+  "toc_base": "0x008969a8",
+  "entry_point": "0x00846ae0",
+  "opd": {
+    "total_entries": 36827,
+    "matched_to_functions": 3328,
+    "matched_to_stubs": 0
+  },
+  "functions": {
+    "total": 18159,
+    "game": 17942,
+    "import_stubs": 0,
+    "thunks": 217,
+    "total_code_bytes": 3519272,
+    "size_stats": {
+      "avg": 193.8,
+      "median": 100,
+      "max": 13544,
+      "min": 8
+    }
+  },
+  "import_call_frequency": {
+    "cellSysmoduleLoadModule": 31,
+    "cellSpursReadyCountStore": 28,
+    "cellSysutilCheckCallback": 25,
+    "cellGcmSetTile": 23,
+    "cellSysmoduleUnloadModule": 19,
+    "cellGcmAddressToOffset": 18,
+    "sys_lwmutex_lock": 17,
+    "sys_lwmutex_unlock": 17,
+    "cellGcmGetTiledPitchSize": 16,
+    "sys_ppu_thread_exit": 13,
+    "sys_ppu_thread_create": 11,
+    "sys_ppu_thread_get_id": 10,
+    "sys_lwmutex_create": 10,
+    "sys_time_get_system_time": 9,
+    "cellFsLseek": 9,
+    "cellFsClose": 8,
+    "cellMsgDialogAbort": 7,
+    "sys_lwmutex_destroy": 7,
+    "cellSyncBarrierInitialize": 6,
+    "cellFsOpen": 6,
+    "cellMsgDialogOpen2": 6,
+    "setsockopt": 6,
+    "cellSpursWakeUp": 5,
+    "cellSpursAddWorkload": 5,
+    "cellGcmSetZcull": 5,
+    "cellFsRead": 5,
+    "cellNetCtlGetInfo": 4,
+    "cellGcmSetDisplayBuffer": 4,
+    "cellMsgDialogOpen": 4,
+    "bind": 4,
+    "recv": 4,
+    "cellSpursGetInfo": 4,
+    "cellSpursShutdownWorkload": 3,
+    "cellSpursWaitForWorkloadShutdown": 3,
+    "cellSpursRemoveWorkload": 3,
+    "cellPadEnd": 3,
+    "cellKbEnd": 3,
+    "cellMouseEnd": 3,
+    "cellPadGetInfo": 3,
+    "cellKbGetInfo": 3,
+    "cellMouseGetInfo": 3,
+    "cellGcmGetLabelAddress": 3,
+    "cellSpursInitialize": 3,
+    "sceNpUtilCmpNpId": 3,
+    "getsockopt": 3,
+    "socket": 3,
+    "send": 3,
+    "sendto": 3,
+    "inet_aton": 3,
+    "sys_process_exit": 2,
+    "cellMouseGetData": 2,
+    "cellKbRead": 2,
+    "cellPadGetData": 2,
+    "cellGcmSetVBlankHandler": 2,
+    "cellVideoOutGetState": 2,
+    "cellVideoOutGetResolution": 2,
+    "cellVideoOutConfigure": 2,
+    "cellGcmSetFlipMode": 2,
+    "cellGcmGetConfiguration": 2,
+    "cellSpursFinalize": 2,
+    "cellGcmSetInvalidateTile": 2,
+    "sys_spu_image_import": 2,
+    "cellAudioOutGetSoundAvailability": 2,
+    "sceNpManagerGetTicket": 2,
+    "cellNetCtlTerm": 2,
+    "cellNetCtlNetStartDialogUnloadAsync": 2,
+    "cellNetCtlInit": 2,
+    "cellFsFstat": 2,
+    "cellSaveDataAutoLoad": 2,
+    "cellSysutilGetSystemParamInt": 2,
+    "connect": 2,
+    "recvfrom": 2,
+    "cellGcmGetControlRegister": 2,
+    "sys_lwmutex_trylock": 2,
+    "cellAudioQuit": 2,
+    "sys_initialize_tls": 1,
+    "sys_prx_exitspawn_with_level": 1,
+    "cellSpursAttachLv2EventQueue": 1,
+    "cellSpursDetachLv2EventQueue": 1,
+    "cellPadInit": 1,
+    "cellKbInit": 1,
+    "cellKbSetCodeType": 1,
+    "cellMouseInit": 1,
+    "cellKbClearBuf": 1,
+    "cellPadGetRawData": 1,
+    "cellPadInfoSensorMode": 1,
+    "cellPadSetSensorMode": 1,
+    "cellSysutilRegisterCallback": 1,
+    "cellGcmGetFlipStatus": 1,
+    "cellGcmResetFlipStatus": 1,
+    "cellGcmSetFlip": 1,
+    "cellGcmSetWaitFlip": 1,
+    "cellSysmoduleInitialize": 1,
+    "cellSysmoduleFinalize": 1,
+    "cellGcmMapMainMemory": 1,
+    "cellHddGameCheck": 1,
+    "cellSyncBarrierWait": 1,
+    "cellSyncBarrierTryWait": 1,
+    "cellAudioOutConfigure": 1,
+    "cellAudioInit": 1,
+    "sys_net_finalize_network": 1,
+    "sceNpTerm": 1,
+    "cellFsWrite": 1,
+    "cellFsUnlink": 1,
+    "cellNetCtlNetStartDialogLoadAsync": 1,
+    "sys_net_initialize_network_ex": 1,
+    "sceNpManagerGetStatus": 1,
+    "sceNpInit": 1,
+    "sceNpBasicRegisterHandler": 1,
+    "sceNpBasicGetEvent": 1,
+    "sceNpManagerGetNpId": 1,
+    "sceNpManagerRegisterCallback": 1,
+    "sceNpManagerRequestTicket": 1,
+    "cellFsOpendir": 1,
+    "cellFsReaddir": 1,
+    "cellFsClosedir": 1,
+    "sys_game_process_exitspawn": 1,
+    "cellFsGetFreeSize": 1,
+    "cellSaveDataDelete": 1,
+    "cellSaveDataAutoSave": 1,
+    "shutdown": 1,
+    "getsockname": 1,
+    "gethostbyname": 1,
+    "listen": 1,
+    "accept": 1,
+    "_sys_net_errno_loc": 1,
+    "socketclose": 1,
+    "socketpoll": 1,
+    "socketselect": 1,
+    "_cellGcmInitBody": 1,
+    "_cellGcmFunc15": 1,
+    "cellAudioPortStart": 1,
+    "cellAudioPortOpen": 1,
+    "cellAudioGetPortConfig": 1,
+    "cellAudioPortClose": 1,
+    "cellAudioPortStop": 1,
+    "cellSpursRequestIdleSpu": 1,
+    "cellSpursSetExceptionEventHandler": 1,
+    "cellSpursSetPriorities": 1,
+    "sys_process_is_stack": 1
+  },
+  "import_stubs": [],
+  "top_20_largest": [
+    {
+      "start": "0x0078c364",
+      "end": "0x0078f84c",
+      "size": 13544
+    },
+    {
+      "start": "0x007c3c2c",
+      "end": "0x007c6400",
+      "size": 10196
+    },
+    {
+      "start": "0x0072c688",
+      "end": "0x0072e324",
+      "size": 7324
+    },
+    {
+      "start": "0x007ba19c",
+      "end": "0x007bbb28",
+      "size": 6540
+    },
+    {
+      "start": "0x0077ddcc",
+      "end": "0x0077f584",
+      "size": 6072
+    },
+    {
+      "start": "0x0075aa88",
+      "end": "0x0075c088",
+      "size": 5632
+    },
+    {
+      "start": "0x007ccc3c",
+      "end": "0x007ce190",
+      "size": 5460
+    },
+    {
+      "start": "0x007e0380",
+      "end": "0x007e1844",
+      "size": 5316
+    },
+    {
+      "start": "0x007ce194",
+      "end": "0x007cf5c8",
+      "size": 5172
+    },
+    {
+      "start": "0x002f35f4",
+      "end": "0x002f48e4",
+      "size": 4848
+    },
+    {
+      "start": "0x007d0cfc",
+      "end": "0x007d1fec",
+      "size": 4848
+    },
+    {
+      "start": "0x00648140",
+      "end": "0x00649400",
+      "size": 4800
+    },
+    {
+      "start": "0x00141bc0",
+      "end": "0x00142e40",
+      "size": 4736
+    },
+    {
+      "start": "0x0059e6a8",
+      "end": "0x0059f698",
+      "size": 4080
+    },
+    {
+      "start": "0x00721e2c",
+      "end": "0x00722e04",
+      "size": 4056
+    },
+    {
+      "start": "0x0076b0b0",
+      "end": "0x0076c088",
+      "size": 4056
+    },
+    {
+      "start": "0x00778ed0",
+      "end": "0x00779ea4",
+      "size": 4052
+    },
+    {
+      "start": "0x007b42a4",
+      "end": "0x007b5238",
+      "size": 3988
+    },
+    {
+      "start": "0x007d8738",
+      "end": "0x007d9670",
+      "size": 3896
+    },
+    {
+      "start": "0x0005c3a8",
+      "end": "0x0005d284",
+      "size": 3804
+    }
+  ]
+}

@@ -28,3 +28,20 @@ recompiled/
 # OS
 Thumbs.db
 .DS_Store
+
+# Large binaries
+*.rar
+*.AT3
+
+# Extracted game files
+extracted/USRDIR/Data/
+extracted/USRDIR/EBOOT.BIN
+extracted/USRDIR/EBOOT.elf
+extracted/*.PNG
+extracted/*.SFO
+extracted/*.DAT
+extracted/*.AT3
+
+# Misc
+crack_extracted/
+flOw PSN [NPUA-80001]/
