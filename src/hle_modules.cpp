@@ -20,22 +20,137 @@
 /* Note: headers may not exist for all modules; we use stubs for unimplemented ones */
 
 /* ---------------------------------------------------------------------------
- * Helper: register a function NID by computing it from the name string
+ * Helper: register a function by explicit NID value
+ * We precompute NIDs using the correct PS3 algorithm (SHA1 with 16-byte
+ * suffix, little-endian truncation) to match what's in the ELF.
  * -----------------------------------------------------------------------*/
+#include <stdlib.h>
+
+/* Compute NID the same way parse_imports_final.py does:
+ * SHA1(name + 16-byte suffix), take first 4 bytes as little-endian uint32 */
+static uint32_t flow_compute_nid(const char* name)
+{
+    static const uint8_t suffix[16] = {
+        0x67,0x59,0x65,0x99,0x04,0x25,0x04,0x90,
+        0x56,0x64,0x27,0x49,0x94,0x89,0x74,0x1A
+    };
+    ps3_sha1_ctx ctx;
+    uint8_t digest[20];
+    ps3_sha1_init(&ctx);
+    ps3_sha1_update(&ctx, name, strlen(name));
+    ps3_sha1_update(&ctx, suffix, 16);
+    ps3_sha1_final(&ctx, digest);
+    /* Little-endian 32-bit from first 4 bytes */
+    return (uint32_t)digest[0] | ((uint32_t)digest[1] << 8) |
+           ((uint32_t)digest[2] << 16) | ((uint32_t)digest[3] << 24);
+}
+
 static void reg_func(ps3_module* m, const char* name, void* handler)
 {
-    uint32_t nid = ps3_compute_nid(name);
+    uint32_t nid = flow_compute_nid(name);
     ps3_nid_table_add(&m->func_table, nid, name, handler);
 }
 
 /* ---------------------------------------------------------------------------
  * Stub handler for not-yet-implemented HLE functions.
- * Prints the call and returns CELL_OK (0).
+ * Returns CELL_OK (0).
  * -----------------------------------------------------------------------*/
 static int64_t hle_stub(ppu_context* ctx)
 {
     (void)ctx;
     return 0; /* CELL_OK */
+}
+
+/* ---------------------------------------------------------------------------
+ * Real HLE handlers for critical functions
+ * -----------------------------------------------------------------------*/
+
+#include "runtime/memory/vm.h"
+
+/* sys_initialize_tls(tls_addr, tls_filesize, tls_memsize, tls_align)
+ * Sets up thread-local storage. We allocate a TLS block in guest memory
+ * and point r13 to it (SDA2 base per PPC64 ABI). */
+static int64_t hle_sys_initialize_tls(ppu_context* ctx)
+{
+    uint32_t tls_addr = (uint32_t)ctx->gpr[3];
+    uint32_t tls_filesz = (uint32_t)ctx->gpr[4];
+    uint32_t tls_memsz = (uint32_t)ctx->gpr[5];
+    uint32_t tls_align = (uint32_t)ctx->gpr[6];
+
+    fprintf(stderr, "[HLE] sys_initialize_tls(addr=0x%x, filesz=0x%x, memsz=0x%x, align=%u)\n",
+            tls_addr, tls_filesz, tls_memsz, tls_align);
+
+    /* Allocate TLS block in guest memory (use a fixed address in main RAM) */
+    static uint32_t tls_alloc_ptr = 0x0F000000; /* near end of main mem */
+    uint32_t tls_base = tls_alloc_ptr;
+    if (tls_align > 0)
+        tls_base = (tls_base + tls_align - 1) & ~(tls_align - 1);
+
+    /* Copy TLS template data */
+    if (tls_filesz > 0 && tls_addr != 0) {
+        memcpy(vm_base + tls_base, vm_base + tls_addr, tls_filesz);
+    }
+    /* Zero BSS portion */
+    if (tls_memsz > tls_filesz) {
+        memset(vm_base + tls_base + tls_filesz, 0, tls_memsz - tls_filesz);
+    }
+
+    tls_alloc_ptr = tls_base + tls_memsz + 0x1000; /* advance for next thread */
+
+    /* Set r13 to TLS base + 0x7000 (PPC64 TLS ABI convention) */
+    ctx->gpr[13] = tls_base + 0x7000;
+
+    fprintf(stderr, "[HLE] TLS block at 0x%x, r13 = 0x%llx\n",
+            tls_base, (unsigned long long)ctx->gpr[13]);
+    return 0;
+}
+
+/* sys_process_exit(status) - terminate the process */
+static int64_t hle_sys_process_exit(ppu_context* ctx)
+{
+    int32_t status = (int32_t)ctx->gpr[3];
+    fprintf(stderr, "[HLE] sys_process_exit(%d)\n", status);
+    exit(status);
+    return 0;
+}
+
+/* sys_time_get_system_time() - returns microseconds since epoch */
+static int64_t hle_sys_time_get_system_time(ppu_context* ctx)
+{
+    /* Return a fake but increasing value */
+    static uint64_t fake_time = 1000000;
+    fake_time += 16667; /* ~60fps frame time */
+    ctx->gpr[3] = fake_time;
+    return 0;
+}
+
+/* sys_ppu_thread_get_id(thread_id_ptr) */
+static int64_t hle_sys_ppu_thread_get_id(ppu_context* ctx)
+{
+    uint32_t ptr = (uint32_t)ctx->gpr[3];
+    /* Write a fake thread ID = 1 */
+    if (ptr && vm_base) {
+        uint32_t tid = 1;
+        uint32_t tid_be = _byteswap_ulong(tid);
+        memcpy(vm_base + ptr, &tid_be, 4);
+    }
+    ctx->gpr[3] = 0; /* CELL_OK */
+    return 0;
+}
+
+/* cellSysmoduleLoadModule(id) - just return CELL_OK */
+static int64_t hle_cellSysmoduleLoadModule(ppu_context* ctx)
+{
+    uint32_t id = (uint32_t)ctx->gpr[3];
+    fprintf(stderr, "[HLE] cellSysmoduleLoadModule(%u)\n", id);
+    return 0;
+}
+
+/* cellSysmoduleUnloadModule(id) */
+static int64_t hle_cellSysmoduleUnloadModule(ppu_context* ctx)
+{
+    (void)ctx;
+    return 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -102,12 +217,10 @@ static void register_cellGcmSys(void)
 static void register_cellSysmodule(void)
 {
     ps3_module_init(&mod_cellSysmodule, "cellSysmodule");
-    const char* funcs[] = {
-        "cellSysmoduleUnloadModule", "cellSysmoduleLoadModule",
-        "cellSysmoduleInitialize", "cellSysmoduleFinalize",
-    };
-    for (auto name : funcs)
-        reg_func(&mod_cellSysmodule, name, (void*)hle_stub);
+    reg_func(&mod_cellSysmodule, "cellSysmoduleLoadModule", (void*)hle_cellSysmoduleLoadModule);
+    reg_func(&mod_cellSysmodule, "cellSysmoduleUnloadModule", (void*)hle_cellSysmoduleUnloadModule);
+    reg_func(&mod_cellSysmodule, "cellSysmoduleInitialize", (void*)hle_stub);
+    reg_func(&mod_cellSysmodule, "cellSysmoduleFinalize", (void*)hle_stub);
     mod_cellSysmodule.loaded = true;
     ps3_register_module(&mod_cellSysmodule);
 }
@@ -240,18 +353,25 @@ static void register_sys_fs(void)
 static void register_sysPrxForUser(void)
 {
     ps3_module_init(&mod_sysPrxForUser, "sysPrxForUser");
-    const char* funcs[] = {
+
+    /* Real implementations */
+    reg_func(&mod_sysPrxForUser, "sys_initialize_tls", (void*)hle_sys_initialize_tls);
+    reg_func(&mod_sysPrxForUser, "sys_process_exit", (void*)hle_sys_process_exit);
+    reg_func(&mod_sysPrxForUser, "sys_time_get_system_time", (void*)hle_sys_time_get_system_time);
+    reg_func(&mod_sysPrxForUser, "sys_ppu_thread_get_id", (void*)hle_sys_ppu_thread_get_id);
+
+    /* Stubs for the rest */
+    const char* stub_funcs[] = {
         "sys_lwmutex_lock", "sys_lwmutex_unlock",
         "sys_ppu_thread_create", "sys_lwmutex_create",
-        "sys_ppu_thread_get_id", "sys_process_is_stack",
-        "sys_initialize_tls", "sys_time_get_system_time",
+        "sys_process_is_stack",
         "sys_prx_exitspawn_with_level", "sys_lwmutex_trylock",
         "sys_ppu_thread_exit", "sys_lwmutex_destroy",
-        "sys_process_exit", "sys_spu_image_import",
-        "sys_game_process_exitspawn",
+        "sys_spu_image_import", "sys_game_process_exitspawn",
     };
-    for (auto name : funcs)
+    for (auto name : stub_funcs)
         reg_func(&mod_sysPrxForUser, name, (void*)hle_stub);
+
     mod_sysPrxForUser.loaded = true;
     ps3_register_module(&mod_sysPrxForUser);
 }

@@ -81,6 +81,9 @@ static void print_banner(void)
 
 int main(int argc, char* argv[])
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    fprintf(stderr, "[boot] flow.exe starting...\n");
     print_banner();
 
     /* Game data directory (override via CLI) */
@@ -115,7 +118,18 @@ int main(int argc, char* argv[])
     /* 4. Initialize stack allocator. */
     vm_stack_alloc_init(&g_vm_stack_alloc);
 
-    /* 5. Load ELF data segments into virtual memory. */
+    /* 5. Commit RSX memory region (flOw maps rodata+data at 0x10000000). */
+    {
+        int32_t rsx_rc = vm_commit(VM_RSX_BASE, VM_RSX_SIZE);
+        if (rsx_rc != CELL_OK) {
+            fprintf(stderr, "ERROR: Failed to commit RSX region (0x%08X)\n", (unsigned)rsx_rc);
+            return 1;
+        }
+        printf("[init] RSX region committed: 0x%08X - 0x%08X\n",
+               VM_RSX_BASE, VM_RSX_BASE + VM_RSX_SIZE);
+    }
+
+    /* 6. Load ELF data segments into virtual memory. */
     char elf_path[512];
     snprintf(elf_path, sizeof(elf_path), "%s/EBOOT.elf", game_dir);
     if (!elf_load_segments(elf_path)) {
