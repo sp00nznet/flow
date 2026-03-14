@@ -20,34 +20,13 @@
 /* Note: headers may not exist for all modules; we use stubs for unimplemented ones */
 
 /* ---------------------------------------------------------------------------
- * Helper: register a function by explicit NID value
- * We precompute NIDs using the correct PS3 algorithm (SHA1 with 16-byte
- * suffix, little-endian truncation) to match what's in the ELF.
+ * Helper: register a function NID computed from name
+ * Uses ps3_compute_nid() from the runtime (now fixed to use correct
+ * 16-byte suffix + little-endian byte order).
  * -----------------------------------------------------------------------*/
-#include <stdlib.h>
-
-/* Compute NID the same way parse_imports_final.py does:
- * SHA1(name + 16-byte suffix), take first 4 bytes as little-endian uint32 */
-static uint32_t flow_compute_nid(const char* name)
-{
-    static const uint8_t suffix[16] = {
-        0x67,0x59,0x65,0x99,0x04,0x25,0x04,0x90,
-        0x56,0x64,0x27,0x49,0x94,0x89,0x74,0x1A
-    };
-    ps3_sha1_ctx ctx;
-    uint8_t digest[20];
-    ps3_sha1_init(&ctx);
-    ps3_sha1_update(&ctx, name, strlen(name));
-    ps3_sha1_update(&ctx, suffix, 16);
-    ps3_sha1_final(&ctx, digest);
-    /* Little-endian 32-bit from first 4 bytes */
-    return (uint32_t)digest[0] | ((uint32_t)digest[1] << 8) |
-           ((uint32_t)digest[2] << 16) | ((uint32_t)digest[3] << 24);
-}
-
 static void reg_func(ps3_module* m, const char* name, void* handler)
 {
-    uint32_t nid = flow_compute_nid(name);
+    uint32_t nid = ps3_compute_nid(name);
     ps3_nid_table_add(&m->func_table, nid, name, handler);
 }
 
