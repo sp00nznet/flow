@@ -100,6 +100,7 @@ add_executable(flow
     src/main.cpp
     src/stubs.cpp
     src/elf_loader.cpp
+    src/vm_bridge.cpp
     ${RECOMP_SOURCES}
 )
 
@@ -145,8 +146,9 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     )
 elseif(MSVC)
     target_compile_options(flow PRIVATE
-        /W3 /wd4100 /wd4244 /wd4267 /wd4996
+        /W3 /wd4100 /wd4244 /wd4267 /wd4996 /wd4013
         /Zc:__cplusplus
+        /bigobj
     )
     target_compile_definitions(flow PRIVATE
         _CRT_SECURE_NO_WARNINGS
