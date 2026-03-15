@@ -6,7 +6,7 @@
 
 Until now.
 
-This project takes the PS3 `EBOOT.elf` binary, disassembles all 18,159 PowerPC functions, lifts them to C, and links against [ps3recomp](https://github.com/sp00nznet/ps3recomp) — a set of HLE runtime libraries that replace the PS3 operating system with native host implementations. The result is a standalone Windows executable that runs flOw natively, no emulator required.
+This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC functions, lifts them to C, and links against [ps3recomp](https://github.com/sp00nznet/ps3recomp) — a set of HLE runtime libraries that replace the PS3 operating system with native host implementations. The result is a standalone Windows executable that runs flOw natively, no emulator required.
 
 ## Current Status
 
@@ -15,10 +15,12 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all 18,159 PowerPC f
 | Title | flOw |
 | Title ID | NPUA80001 |
 | Engine | PhyreEngine (Sony) |
-| Functions discovered | 18,159 |
+| Functions discovered | 51,658 (OPD + analysis) |
+| Functions lifted to C | 51,658 (100%) |
 | Imported libraries | 12 |
-| Imported functions | 140 (139 resolved, 99.3%) |
-| Binary size | ~10 MB (ELF) |
+| Imported functions | 140/140 resolved (100%) |
+| Binary size | ~10 MB (ELF) → 37 MB (exe) |
+| Remaining TODOs | ~24,660 (mostly VMX/AltiVec) |
 | ps3recomp version | v0.3.1 |
 | Target | Windows x86-64 (Linux planned) |
 
@@ -26,39 +28,47 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all 18,159 PowerPC f
 
 | Phase | Status | Notes |
 |---|---|---|
-| PKG extraction | Complete | 553 files extracted from PSN package |
-| SELF decryption | Complete | EBOOT.BIN -> EBOOT.elf via RPCS3 + RAP |
-| Binary analysis | Complete | 18,159 functions, 12 imported libraries |
-| NID resolution | Complete | 139/140 import NIDs mapped to function names |
-| PPU disassembly | In Progress | Full PowerPC64 disassembler ready in ps3recomp |
-| C lifting | Planned | PPU -> C translation via ppu_lifter |
-| Runtime linking | Planned | Link against ps3recomp HLE libraries |
-| Graphics backend | Planned | RSX -> D3D12 translation |
-| Audio backend | Planned | cellAudio -> WASAPI |
-| Native build | Planned | Compile and run on PC |
+| PKG extraction | **Complete** | 553 files extracted from PSN package |
+| SELF decryption | **Complete** | EBOOT.BIN → EBOOT.elf via RPCS3 + RAP |
+| Binary analysis | **Complete** | 51,658 functions via OPD + heuristic analysis |
+| NID resolution | **Complete** | 140/140 import NIDs mapped to function names |
+| ELF structural analysis | **Complete** | Segments, sections, OPD, TOC, memory map |
+| PPU lifting | **Complete** | 51,658 functions lifted to C++ (156 MB source) |
+| Runtime linking | **Complete** | Builds and links against ps3recomp runtime |
+| HLE module registration | **Complete** | 12 modules, 140 NID handlers registered |
+| Game boot | **Working** | CRT entry → TLS init → module loading |
+| Graphics backend | Planned | RSX → D3D12 translation |
+| Audio backend | Planned | cellAudio → WASAPI |
+| Full gameplay | In Progress | Debugging post-CRT initialization |
+
+### What Works Now
+
+- **51,658 PPC64 functions** lifted to native C++ with the improved lifter
+- **Instruction coverage**: `rldicl` (57K instances), indexed loads/stores, FP fused multiply-add, FP compare/conversion, 64-bit shifts/rotates
+- **All ELF segments** loaded into 4 GB virtual memory (text, data, rodata, BSS, RSX region)
+- **LV2 syscall dispatch** wired to runtime table
+- **NID-based HLE dispatch** for all 140 imports across 12 PS3 libraries
+- **Real HLE implementations**: `sys_initialize_tls`, `sys_process_exit`, `sys_time_get_system_time`, `sys_ppu_thread_get_id`, `cellSysmoduleLoadModule`
+- **Game boots** and enters recompiled code, CRT runs, TLS initializes
 
 ## Import Map
 
-flOw imports 140 functions from 12 PS3 system libraries. Here's what the game needs and what ps3recomp v0.3.1 provides:
+flOw imports 140 functions from 12 PS3 system libraries:
 
-| Library | Functions | ps3recomp Status | Key APIs |
+| Library | Functions | HLE Status | Key APIs |
 |---|---|---|---|
-| **sys_net** | 21 | Complete | Full BSD sockets — socket, bind, connect, send, recv, poll, select |
-| **cellGcmSys** | 18 | Complete | GPU init, display buffers, flip, tile/zcull, memory mapping, labels |
-| **sys_io** | 17 | Complete | Pad (6), Keyboard (5), Mouse (4) — all three input devices |
-| **cellSysutil** | 15 | Complete | Video/audio output config, save data, message dialogs, HDD check |
-| **sysPrxForUser** | 15 | Complete | Thread create/exit, lwmutex, TLS init, process exit |
-| **cellSpurs** | 14 | Partial | SPU workload management, init/finalize, priorities, wake |
-| **sys_fs** | 11 | Complete | File I/O — open, read, write, close, stat, directory ops |
-| **sceNp** | 10 | Complete | NP init/term, tickets, presence, basic messaging |
-| **cellAudio** | 7 | Complete | Audio port open/close/start/stop, config, init/quit |
-| **cellNetCtl** | 5 | Complete | Network init/term, get info, start dialog |
-| **cellSysmodule** | 4 | Complete | Module load/unload/init/finalize |
-| **cellSync** | 3 | Complete | Barrier init, wait, try-wait |
-
-**Coverage: 11/12 libraries fully implemented, 1 partial (cellSpurs).**
-
-As of ps3recomp v0.3.1, nearly all of flOw's HLE dependencies are complete. The remaining partial module (cellSpurs) covers SPU workload management — PhyreEngine uses SPURS for physics and particle effects on the Cell SPUs. These workloads will need to be either recompiled for the host CPU or stubbed if non-essential to gameplay.
+| **sys_net** | 21 | Stubbed | BSD sockets — socket, bind, connect, send, recv, poll |
+| **cellGcmSys** | 18 | Stubbed | GPU init, display buffers, flip, tile/zcull, memory mapping |
+| **sys_io** | 17 | Stubbed | Pad, Keyboard, Mouse input |
+| **cellSysutil** | 15 | Stubbed | Video/audio config, save data, message dialogs |
+| **sysPrxForUser** | 15 | **Partial** | TLS init, thread create/exit, lwmutex, process exit |
+| **cellSpurs** | 14 | Stubbed | SPU workload management |
+| **sys_fs** | 11 | Stubbed | File I/O — open, read, write, close, stat |
+| **sceNp** | 10 | Stubbed | PlayStation Network services |
+| **cellAudio** | 7 | Stubbed | Audio port management |
+| **cellNetCtl** | 5 | Stubbed | Network control |
+| **cellSysmodule** | 4 | **Real** | Module load/unload with logging |
+| **cellSync** | 3 | Stubbed | Barrier synchronization |
 
 ## How It Works
 
@@ -68,60 +78,50 @@ As of ps3recomp v0.3.1, nearly all of flOw's HLE dependencies are complete. The 
 |              (PowerPC 64-bit, big-endian)                  |
 +-----------------------------+-----------------------------+
                               |
-                         +----v----+
-                         | Analyze |  find_functions.py -> 18,159 functions
-                         +----+----+
+                  +-----------v-----------+
+                  | Analyze (18K+37K OPD) |  51,658 functions
+                  +-----------+-----------+
                               |
-                       +------v------+
-                       | Disassemble |  ppu_disasm.py -> PowerPC assembly
-                       +------+------+
-                              |
-                         +----v---+
-                         |  Lift  |  ppu_lifter.py -> C source code
-                         +----+---+
+                    +---------v---------+
+                    | Lift (ppu_lifter) |  156 MB of C++ code
+                    +---------+---------+
                               |
                +--------------v--------------+
                |    Link & Compile           |
                |                             |
-               |  recomp/*.c                 |
-               |  + ps3recomp runtime        |---> flow.exe
-               |  + graphics backend (D3D12) |
-               |  + audio backend (WASAPI)   |
+               |  ppu_recomp.cpp (156 MB)    |
+               |  + import_stubs.cpp         |
+               |  + hle_modules.cpp          |
+               |  + vm_bridge.cpp            |---> flow.exe (37 MB)
+               |  + ps3recomp runtime        |
+               |  + elf_loader.cpp           |
                +--------------+--------------+
 ```
 
-### The PhyreEngine Challenge
+### Architecture
 
-flOw was built on **PhyreEngine**, Sony's first-party game engine. This means:
+- **vm_bridge.cpp** — Bridges lifter's uint64_t memory API to ps3recomp's uint32_t big-endian VM
+- **hle_modules.cpp** — Registers 12 PS3 modules with NID→handler mappings for HLE dispatch
+- **import_stubs.cpp** — 140 import stub functions that resolve NIDs at runtime
+- **elf_loader.cpp** — Loads PT_LOAD segments from EBOOT.elf into virtual memory
+- **ppu_recomp.cpp** — 51,658 lifted C++ functions (auto-generated)
+- **func_table.cpp** — RecompiledFunc array mapping guest addresses to host functions
 
-- **Graphics**: Direct RSX/GCM command buffer submission (not a high-level API). The recompiled code will emit GCM commands that need translation to a modern graphics API.
-- **SPU workloads**: PhyreEngine offloads physics and particle work to SPUs via SPURS. These need to be either recompiled for the host CPU or stubbed if non-essential.
-- **Shaders**: Cg vertex/fragment programs (`.cgvpo`/`.cgfpo`) that target the RSX's shader ISA. These need conversion to HLSL/SPIR-V.
+### Key Technical Details
 
-### Game Data
-
-```
-game/
-├── PARAM.SFO              # Title metadata
-├── ICON0.PNG              # Game icon (320x176)
-├── EBOOT.elf              # Decrypted ELF64 (our target)
-└── Data/
-    ├── Campaigns/         # Level definitions (XML)
-    ├── Meshes/            # 3D models (PSSG format)
-    ├── Music/             # Soundtrack (MP3)
-    ├── Shaders/           # Cg programs
-    ├── Sounds/            # Sound effects (.bnk)
-    └── Textures/          # Compressed textures (.dds.gz)
-```
+- **TOC base**: `0x008969A8` (from OPD analysis)
+- **Entry point**: OPD `0x00846AE0` → CRT stub `0x00010230` → `0x00010254`
+- **Memory map**: Text (8 MB @ 0x10000), Data (0.5 MB @ 0x820000), Rodata (0.2 MB @ 0x10000000), Data+BSS (3.3 MB @ 0x10040000)
+- **ppu_context**: Uses runtime's full struct (GPR, FPR, VR, CR, LR, CTR, XER, FPSCR, CIA)
 
 ## Building
 
 ### Prerequisites
 
-- Python 3.8+ with packages: `pycryptodome`, `capstone`, `construct`, `tabulate`, `tomli`, `tqdm`
+- Python 3.8+
 - CMake 3.20+
-- A C/C++ compiler (MSVC 2022 / Clang / GCC)
-- [ps3recomp](https://github.com/sp00nznet/ps3recomp) (expected at `../ps3/` or set `PS3RECOMP_DIR`)
+- MSVC 2022 (or Clang/GCC)
+- [ps3recomp](https://github.com/sp00nznet/ps3recomp) (at `../ps3/` or set `PS3RECOMP_DIR`)
 
 ### Steps
 
@@ -130,46 +130,63 @@ game/
 git clone https://github.com/sp00nznet/flow.git
 cd flow
 
-# Place your decrypted EBOOT.elf and game data in game/
+# Place your decrypted EBOOT.elf in game/
 # (You need a legitimate copy of flOw from PSN)
 
-# Run the recompilation pipeline
-python ../ps3/tools/ppu_lifter.py --config config.toml
+# Run the recompilation pipeline (takes ~90 min for 51K functions)
+python tools/recompile.py --functions-file combined_functions.json \
+    --skip-find --ps3recomp-dir ../ps3
+
+# Patch generated header (runtime ppu_context + extern C)
+# (see src/recomp/ppu_recomp.h for required modifications)
 
 # Build
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DPS3RECOMP_DIR=../ps3
+cmake --build build --config Release
 
 # Run
-./build/flow
+./build/Release/flow.exe game/
 ```
 
-> **Note**: You must supply your own copy of flOw (NPUA80001). This repo contains only the recompilation toolchain integration and runtime code, not any copyrighted game data.
+> **Note**: You must supply your own copy of flOw (NPUA80001). This repo contains only the recompilation toolchain and runtime code, not any copyrighted game data.
 
 ## Project Structure
 
 ```
 flow/
 ├── README.md
-├── CMakeLists.txt         # Build config (links ps3recomp runtime)
-├── config.toml            # Recompiler configuration
-├── imports.json           # Resolved import table (140 functions)
-├── game/                  # Place EBOOT.elf + Data/ here (not in repo)
+├── CMakeLists.txt              # Build config (links ps3recomp runtime)
+├── config.toml                 # Recompiler pipeline configuration
+├── analysis.json               # 18,159 function boundaries (heuristic)
+├── combined_functions.json     # 51,658 functions (analysis + OPD)
+├── opd_functions.json          # 36,827 OPD procedure descriptors
+├── elf_analysis.json           # Full ELF structural analysis
+├── game/                       # Place EBOOT.elf + Data/ here (not in repo)
 ├── src/
-│   ├── main.cpp           # Entry point, runtime initialization
-│   ├── stubs.cpp          # Placeholder function table, game-specific overrides
-│   ├── config.h           # Build-time constants
-│   └── recomp/            # Recompiled output (generated, not in repo)
-├── tools/                 # Pipeline scripts
-└── docs/
-    └── analysis.md        # Binary analysis notes
+│   ├── main.cpp                # Entry point, VM/syscall/HLE initialization
+│   ├── stubs.cpp               # Placeholder function table (no-recomp mode)
+│   ├── config.h                # Build-time constants
+│   ├── elf_loader.cpp/h        # ELF segment loader
+│   ├── vm_bridge.cpp           # Memory API bridge (uint64→uint32, byte swap)
+│   ├── hle_modules.cpp         # HLE module registration (12 modules, 140 NIDs)
+│   └── recomp/                 # Generated recompiled code (not in repo)
+│       ├── ppu_recomp.cpp      # 51,658 lifted functions (156 MB)
+│       ├── ppu_recomp.h        # Context struct + declarations
+│       ├── func_table.cpp      # Guest→host function mapping
+│       ├── import_stubs.cpp    # 140 NID-dispatching import stubs
+│       └── missing_stubs.cpp   # Empty stubs for unlifted call targets
+├── tools/
+│   └── recompile.py            # Master recompilation pipeline
+├── extracted/                  # Game metadata and analysis outputs
+│   └── USRDIR/imports.json     # Resolved import table
+├── parse_imports_final.py      # ELF import table parser (140/140 NIDs)
+├── analyze_elf.py              # Comprehensive ELF analyzer
+└── extract_pkg.py              # PKG extraction tool
 ```
 
 ## Related Projects
 
 - **[ps3recomp](https://github.com/sp00nznet/ps3recomp)** — The PS3 HLE runtime library this project builds against
-- **[burnout3](https://github.com/sp00nznet/burnout3)** — Static recomp of Burnout 3: Takedown (PS2/Xbox)
-- **[pcrecomp](https://github.com/sp00nznet/pcrecomp)** — PC game recompilation framework
 - **[N64Recomp](https://github.com/N64Recomp/N64Recomp)** — The project that proved static recompilation works at scale
 - **[RPCS3](https://github.com/RPCS3/rpcs3)** — PS3 emulator whose HLE research makes this possible
 
@@ -179,20 +196,23 @@ This project does not contain any proprietary Sony code, game binaries, encrypti
 
 ## Changelog
 
+### v0.3.0 — Game Boots (2026-03-15)
+- Lifted 51,658 functions to C++ (up from 18,159)
+- Added 64-bit instruction lifting: rldicl, rldicr, rldic, rldimi, indexed loads/stores, FP fused multiply-add, FP compare/conversion
+- Wired HLE modules with NID-based dispatch (12 modules, 140 handlers)
+- Implemented real HLE: sys_initialize_tls, sys_process_exit, cellSysmoduleLoadModule
+- Fixed ps3recomp NID computation (16-byte suffix, little-endian)
+- Game boots, enters recompiled CRT code, initializes TLS successfully
+- 37 MB native executable
+
 ### v0.2.0 — Runtime Alignment (2026-03-12)
-- Updated to ps3recomp v0.3.1 API (C++ namespace pattern)
-- Added stubs.cpp with placeholder function table and game-specific overrides
-- Added config.toml for recompiler pipeline configuration
-- Updated import map: 11/12 libraries now fully implemented in ps3recomp
-- Added bcrypt to Windows link libraries (required by ps3recomp v0.3.x)
-- Aligned CMake build system with ps3recomp project template
+- Updated to ps3recomp v0.3.1 API
+- Added ELF segment loader, recompile pipeline, stubs system
+- Aligned CMake build with ps3recomp project template
 
 ### v0.1.0 — Binary Analysis (2026-03-10)
-- Extracted 553 files from flOw PSN package (NPUA80001)
-- Decrypted SELF -> ELF64 using RPCS3
-- Discovered 18,159 functions via automated analysis
-- Resolved 139/140 import NIDs (99.3%) across 12 libraries
-- Mapped complete dependency graph against ps3recomp modules
+- Extracted flOw from PSN package
+- Discovered 18,159 functions, resolved 139/140 import NIDs
 - Created project structure and toolchain integration
 
 ---
