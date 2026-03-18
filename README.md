@@ -15,13 +15,14 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | Title | flOw |
 | Title ID | NPUA80001 |
 | Engine | PhyreEngine (Sony) |
-| Functions discovered | 51,658 (OPD + analysis) |
-| Functions lifted to C | 51,658 (100%) |
+| Functions discovered | 68,376 (OPD + heuristic + branch targets) |
+| Functions lifted to C | 68,376 (100%) |
 | Imported libraries | 12 |
 | Imported functions | 140/140 resolved (100%) |
-| Binary size | ~10 MB (ELF) → 37 MB (exe) |
+| Binary size | ~10 MB (ELF) → ~40 MB (exe) |
+| HLE bridges | 7/12 real (cellSysutil, cellGcmSys, cellAudio, cellPad, cellFs, cellSysmodule, sysPrxForUser) |
 | Remaining TODOs | ~24,660 (mostly VMX/AltiVec) |
-| ps3recomp version | v0.3.1 |
+| ps3recomp version | v0.4.0 |
 | Target | Windows x86-64 (Linux planned) |
 
 ### Phase Progress
@@ -33,23 +34,27 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | Binary analysis | **Complete** | 51,658 functions via OPD + heuristic analysis |
 | NID resolution | **Complete** | 140/140 import NIDs mapped to function names |
 | ELF structural analysis | **Complete** | Segments, sections, OPD, TOC, memory map |
-| PPU lifting | **Complete** | 51,658 functions lifted to C++ (156 MB source) |
+| PPU lifting | **Complete** | 68,376 functions lifted to C++ |
 | Runtime linking | **Complete** | Builds and links against ps3recomp runtime |
-| HLE module registration | **Complete** | 12 modules, 140 NID handlers registered |
-| Game boot | **Working** | CRT entry → TLS init → module loading |
+| HLE module registration | **Complete** | 12 modules, 7 with real HLE bridges |
+| Game boot | **Working** | CRT entry → TLS → mutex init → malloc |
 | Graphics backend | Planned | RSX → D3D12 translation |
-| Audio backend | Planned | cellAudio → WASAPI |
-| Full gameplay | In Progress | Debugging post-CRT initialization |
+| Audio backend | **Wired** | cellAudio → WASAPI via ps3recomp |
+| Input backend | **Wired** | cellPad → XInput via ps3recomp |
+| Full gameplay | In Progress | Debugging CRT startup and game init |
 
 ### What Works Now
 
-- **51,658 PPC64 functions** lifted to native C++ with the improved lifter
-- **Instruction coverage**: `rldicl` (57K instances), indexed loads/stores, FP fused multiply-add, FP compare/conversion, 64-bit shifts/rotates
+- **68,376 PPC64 functions** lifted to native C++ (extended from 51K with branch target analysis)
+- **7 HLE modules with real bridges** — proper PPC64 ABI parameter extraction, BE struct output, host OS backends
+- **Real WASAPI audio** via ps3recomp's cellAudio mixing thread
+- **Real XInput gamepad** via ps3recomp's cellPad backend
+- **Real filesystem I/O** via ps3recomp's cellFs path translation
+- **Real lightweight mutexes** via CRITICAL_SECTION-backed sysPrxForUser
+- **CRT startup progresses** through TLS init → mutex creation → malloc
 - **All ELF segments** loaded into 4 GB virtual memory (text, data, rodata, BSS, RSX region)
-- **LV2 syscall dispatch** wired to runtime table
-- **NID-based HLE dispatch** for all 140 imports across 12 PS3 libraries
-- **Real HLE implementations**: `sys_initialize_tls`, `sys_process_exit`, `sys_time_get_system_time`, `sys_ppu_thread_get_id`, `cellSysmoduleLoadModule`
-- **Game boots** and enters recompiled code, CRT runs, TLS initializes
+- **LV2 syscall dispatch** with sys_tty_write for CRT debug output
+- **NID-based HLE dispatch** for all 140 imports, with TOC save fix for PPC64 ABI compliance
 
 ## Import Map
 
