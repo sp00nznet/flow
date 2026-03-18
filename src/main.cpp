@@ -157,8 +157,24 @@ int main(int argc, char* argv[])
 
     printf("[init] Entering game at 0x%X...\n\n", FLOW_ENTRY_POINT);
 
+#ifdef _WIN32
+    /* Install SEH handler to catch crashes in recompiled code */
+    __try {
+#endif
     /* Call the recompiled game entry point */
     recomp_game_main(&ctx);
+#ifdef _WIN32
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        DWORD code = GetExceptionCode();
+        fprintf(stderr, "\n[CRASH] Exception 0x%08lX in recompiled code\n", code);
+        fprintf(stderr, "[CRASH] Last CIA: 0x%08X, r1(SP)=0x%llX, r2(TOC)=0x%llX\n",
+                ctx.cia, (unsigned long long)ctx.gpr[1], (unsigned long long)ctx.gpr[2]);
+        fprintf(stderr, "[CRASH] r3=0x%llX  r4=0x%llX  r13=0x%llX  LR=0x%llX\n",
+                (unsigned long long)ctx.gpr[3], (unsigned long long)ctx.gpr[4],
+                (unsigned long long)ctx.gpr[13], (unsigned long long)ctx.lr);
+        return 1;
+    }
+#endif
 
     /* Cleanup */
     printf("\n[exit] flOw has exited. Shutting down...\n");

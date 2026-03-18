@@ -4,8 +4,17 @@
 #include "ps3emu/module.h"
 #include <stdio.h>
 
-/* NID dispatch: look up handler and call it */
+/* NID dispatch: look up handler and call it.
+ *
+ * IMPORTANT: Save current TOC (r2) to the caller's expected stack location
+ * before calling the handler. The PPC64 ELF ABI requires callers to restore
+ * TOC from sp+40 after inter-module calls. The lifter doesn't emit the
+ * 'std r2, 40(r1)' instruction that the PS3 PLT stubs would normally do,
+ * so we do it here to prevent the caller's TOC restore from reading garbage. */
 static void nid_dispatch(ppu_context* ctx, uint32_t nid, const char* name) {
+    /* Save TOC to caller's stack frame at SP+0x28 (decimal 40) per PPC64 ABI */
+    vm_write64((uint32_t)ctx->gpr[1] + 0x28, ctx->gpr[2]);
+
     void* handler = ps3_resolve_func_nid(nid);
     if (handler) {
         fprintf(stderr, "[HLE] %s\n", name);
