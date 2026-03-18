@@ -194,6 +194,13 @@ int main(int argc, char* argv[])
     ctx.cia = FLOW_ENTRY_POINT;
     ctx.gpr[2] = 0x008969A8;  /* TOC base from OPD analysis */
 
+    /* Set LR to a safe return address. On the real PS3, LR points to the
+     * process exit handler when the main thread starts. We can't use 0
+     * because any function that saves/restores LR will propagate the 0.
+     * Set it to the sys_process_exit import stub address (0x008175FC)
+     * so returning from main() cleanly calls exit. */
+    ctx.lr = 0x008175FC;  /* sys_process_exit import stub */
+
     /* 8. Initialize null graphics backend (Win32 window for RSX clear color). */
     {
         if (rsx_null_backend_init(FLOW_WINDOW_WIDTH, FLOW_WINDOW_HEIGHT,
