@@ -62,6 +62,11 @@ extern "C" const size_t         g_recompiled_func_count;
 extern "C" void recomp_game_main(void* ctx);
 extern "C" void flow_register_hle_modules(void);
 
+/* RSX null backend (from ps3recomp runtime) */
+extern "C" int rsx_null_backend_init(uint32_t w, uint32_t h, const char* title);
+extern "C" void rsx_null_backend_shutdown(void);
+extern "C" int rsx_null_backend_pump_messages(void);
+
 /* ---------------------------------------------------------------------------
  * Banner
  * -----------------------------------------------------------------------*/
@@ -154,6 +159,17 @@ int main(int argc, char* argv[])
 
     ctx.cia = FLOW_ENTRY_POINT;
     ctx.gpr[2] = 0x008969A8;  /* TOC base from OPD analysis */
+
+    /* 8. Initialize null graphics backend (Win32 window for RSX clear color). */
+    {
+        if (rsx_null_backend_init(FLOW_WINDOW_WIDTH, FLOW_WINDOW_HEIGHT,
+                                   FLOW_WINDOW_TITLE) == 0) {
+            printf("[init] RSX null backend: %ux%u window\n",
+                   FLOW_WINDOW_WIDTH, FLOW_WINDOW_HEIGHT);
+        } else {
+            printf("[init] RSX null backend: failed (continuing without window)\n");
+        }
+    }
 
     printf("[init] Entering game at 0x%X...\n\n", FLOW_ENTRY_POINT);
 
