@@ -102,6 +102,7 @@ add_executable(flow
     src/elf_loader.cpp
     src/vm_bridge.cpp
     src/hle_modules.cpp
+    src/malloc_override.cpp
     ${RECOMP_SOURCES}
 )
 

@@ -62,6 +62,19 @@ extern "C" const size_t         g_recompiled_func_count;
 extern "C" void recomp_game_main(void* ctx);
 extern "C" void flow_register_hle_modules(void);
 
+/* VM bridge functions */
+extern "C" void vm_write32(uint64_t addr, uint32_t val);
+extern "C" uint32_t vm_read32(uint64_t addr);
+
+/* Guest malloc HLE (from malloc_override.cpp) */
+extern "C" void hle_guest_malloc(ppu_context* ctx);
+extern "C" void hle_guest_free(ppu_context* ctx);
+extern "C" void hle_guest_calloc(ppu_context* ctx);
+extern "C" void hle_guest_realloc(ppu_context* ctx);
+
+/* Recompiled function entry (from func_table.cpp) */
+extern "C" void func_006B738C(ppu_context* ctx);  /* malloc */
+
 /* RSX null backend (from ps3recomp runtime) */
 extern "C" int rsx_null_backend_init(uint32_t w, uint32_t h, const char* title);
 extern "C" void rsx_null_backend_shutdown(void);
@@ -190,6 +203,58 @@ int main(int argc, char* argv[])
         } else {
             printf("[init] RSX null backend: failed (continuing without window)\n");
         }
+    }
+
+    /* 9. Initialize CRT heap.
+     * The PS3 CRT Dinkumware malloc reads heap metadata from BSS.
+     * Rather than reverse-engineering the exact heap structure, we
+     * initialize the critical BSS variables that the CRT checks:
+     *
+     * TOC-0x3160 → 0x101EC334: heap count (must be >= 1)
+     * TOC-0x3290 → 0x1035BA88: heap init flag (must be non-zero)
+     * TOC-0x3294 → 0x1035BA8C: heap descriptor table pointer
+     *
+     * The heap descriptor at 0x1035BA8C needs to match what the CRT
+     * expects — a linked list of memory regions with free block tracking.
+     * For now, we initialize the count and flag so the CRT's lock
+     * function doesn't bail early, and rely on the malloc itself
+     * finding available memory in the committed regions. */
+    {
+        /* Set heap count to 2 (CRT creates heap 0 and heap 1) */
+        vm_write32(0x101EC334, 2);
+
+        /* Set heap init flag */
+        vm_write32(0x1035BA88, 1);
+
+        /* Initialize the heap descriptor table at 0x1035BA8C.
+         * On PS3, each heap entry is a struct with base, size, etc.
+         * The CRT reads (descriptor + 0x0) as a pointer and dereferences
+         * (descriptor + 0x10) to check available memory.
+         * We set up a plausible descriptor pointing to our heap region. */
+        uint32_t heap_base = 0x00A00000;
+        uint32_t heap_size = 0x06000000; /* 96 MB */
+        uint32_t heap_desc = 0x1035BA8C;
+
+        /* Heap descriptor: write a self-referencing structure that
+         * makes the CRT think memory is available. */
+        vm_write32(heap_desc + 0x00, heap_base); /* base address */
+        vm_write32(heap_desc + 0x04, heap_size); /* total size */
+        vm_write32(heap_desc + 0x08, heap_base); /* current free pointer */
+        vm_write32(heap_desc + 0x0C, heap_size); /* remaining size */
+        vm_write32(heap_desc + 0x10, heap_base); /* free list head */
+        vm_write32(heap_desc + 0x14, 0);         /* used count */
+        vm_write32(heap_desc + 0x18, heap_size); /* max alloc */
+        vm_write32(heap_desc + 0x1C, 0);         /* flags */
+
+        /* Also set up a basic free block header at heap_base */
+        vm_write32(heap_base + 0x00, heap_size - 0x20); /* usable size */
+        vm_write32(heap_base + 0x04, 0);                /* flags: free */
+        vm_write32(heap_base + 0x08, 0);                /* next = NULL */
+        vm_write32(heap_base + 0x0C, 0);                /* prev = NULL */
+        vm_write32(heap_base + 0x10, heap_base + 0x20); /* data ptr */
+
+        printf("[init] CRT heap: base=0x%08X, size=%u MB\n",
+               heap_base, heap_size / (1024 * 1024));
     }
 
     printf("[init] Entering game at 0x%X...\n\n", FLOW_ENTRY_POINT);
