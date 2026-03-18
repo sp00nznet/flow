@@ -103,6 +103,7 @@ add_executable(flow
     src/vm_bridge.cpp
     src/hle_modules.cpp
     src/malloc_override.cpp
+    src/indirect_dispatch.cpp
     ${RECOMP_SOURCES}
 )
 
