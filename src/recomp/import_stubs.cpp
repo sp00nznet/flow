@@ -15,6 +15,9 @@ static void nid_dispatch(ppu_context* ctx, uint32_t nid, const char* name) {
     /* Save TOC to caller's stack frame at SP+0x28 (decimal 40) per PPC64 ABI */
     vm_write64((uint32_t)ctx->gpr[1] + 0x28, ctx->gpr[2]);
 
+    /* Also save LR — some callers restore LR from the stack after import calls */
+    vm_write64((uint32_t)ctx->gpr[1] + 0x10, ctx->lr);
+
     void* handler = ps3_resolve_func_nid(nid);
     if (handler) {
         fprintf(stderr, "[HLE] %s\n", name);
