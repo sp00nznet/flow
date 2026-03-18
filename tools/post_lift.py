@@ -145,15 +145,20 @@ def apply_fallthrough_fix(recomp_dir: str) -> int:
             if j >= 0:
                 prev_stmt = lines[j].strip().rstrip(';')
                 needs_ft = True
-                if (prev_stmt.startswith('return') or
-                    prev_stmt.startswith('func_') or
-                    prev_stmt.startswith('lv2_syscall') or
-                    '{ func_' in prev_stmt):
-                    needs_ft = False
-                # goto/branch at end means the function has an exit path
-                # but NOT if it's a conditional (if ... goto) — those can fall through
-                if 'goto ' in prev_stmt and 'if ' not in prev_stmt:
-                    needs_ft = False
+                # Only skip fallthrough if the last statement UNCONDITIONALLY exits:
+                # - bare return
+                # - bare function call (not inside an if)
+                # - bare goto (not inside an if)
+                # - lv2_syscall (not inside an if)
+                # Conditional exits (if (...) { func_X(); return; }) still need
+                # fallthrough for the false path!
+                is_conditional = prev_stmt.startswith('if ')
+                if not is_conditional:
+                    if (prev_stmt.startswith('return') or
+                        prev_stmt.startswith('func_') or
+                        prev_stmt.startswith('lv2_syscall') or
+                        ('goto ' in prev_stmt)):
+                        needs_ft = False
 
                 if needs_ft:
                     for k in range(i, max(i - 200, -1), -1):
