@@ -212,6 +212,50 @@ def patch_bctrl(recomp_dir: str) -> int:
     return count
 
 
+def patch_malloc(recomp_dir: str) -> int:
+    """Patch the CRT malloc (func_006B738C) to call hle_guest_malloc."""
+    cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
+    with open(cpp_path, "rb") as f:
+        data = f.read()
+
+    target = b"void func_006B738C(ppu_context* ctx) {"
+    idx = data.find(target)
+    if idx < 0:
+        print("  func_006B738C not found — skipping malloc patch")
+        return 0
+
+    # Find the end of this function (next void func_ declaration)
+    end = data.find(b"\nvoid func_", idx + 100)
+    if end < 0:
+        print("  Could not find end of func_006B738C")
+        return 0
+
+    # Replace with HLE malloc call
+    new_func = (
+        b"void func_006B738C(ppu_context* ctx) {\n"
+        b"    /* PATCHED: HLE bump allocator malloc */\n"
+        b"    extern \"C\" void hle_guest_malloc(ppu_context* ctx);\n"
+        b"    hle_guest_malloc(ctx);\n"
+        b"}\n"
+    )
+
+    # Add global declaration near top if not present
+    decl = b'extern "C" void hle_guest_malloc(ppu_context* ctx);'
+    if decl not in data[:10000]:
+        data = data.replace(
+            b'#include "ppu_recomp.h"',
+            b'#include "ppu_recomp.h"\nextern "C" void hle_guest_malloc(ppu_context* ctx);'
+        )
+
+    data = data[:idx] + new_func + data[end:]
+
+    with open(cpp_path, "wb") as f:
+        f.write(data)
+
+    print("  Patched func_006B738C → hle_guest_malloc")
+    return 1
+
+
 def print_stats(recomp_dir: str) -> None:
     """Print statistics about the recompiled code."""
     cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
@@ -253,6 +297,9 @@ def main():
 
     print("\n4. Patching bctrl indirect calls")
     patch_bctrl(recomp_dir)
+
+    print("\n5. Patching malloc → HLE bump allocator")
+    patch_malloc(recomp_dir)
 
     print_stats(recomp_dir)
     print("\nDone! Ready to build.")
