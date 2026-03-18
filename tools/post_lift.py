@@ -50,6 +50,11 @@ def patch_header(recomp_dir: str) -> None:
             content, flags=re.DOTALL
         )
 
+    # Ensure math.h and string.h are included (needed for sqrt, memcpy in lifted code)
+    if "<math.h>" not in content:
+        content = content.replace("#include <stdint.h>",
+                                  "#include <stdint.h>\n#include <string.h>\n#include <math.h>")
+
     # Add MSVC __builtin_clz compatibility if not present
     if "__builtin_clz" not in content:
         insert_after = "#pragma once\n"
@@ -179,6 +184,34 @@ def apply_fallthrough_fix(recomp_dir: str) -> int:
     return modified
 
 
+def patch_bctrl(recomp_dir: str) -> int:
+    """Replace unsafe bctrl casts with ps3_indirect_call dispatch."""
+    cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
+    with open(cpp_path, "rb") as f:
+        data = f.read()
+
+    old = b"((void(*)(ppu_context*))ctx->ctr)(ctx);"
+    new = b"ps3_indirect_call(ctx);"
+    count = data.count(old)
+
+    if count > 0:
+        data = data.replace(old, new)
+
+        # Add declaration if not present
+        decl = b'extern "C" void ps3_indirect_call(ppu_context* ctx);'
+        if decl not in data:
+            data = data.replace(
+                b'#include "ppu_recomp.h"',
+                b'#include "ppu_recomp.h"\nextern "C" void ps3_indirect_call(ppu_context* ctx);'
+            )
+
+        with open(cpp_path, "wb") as f:
+            f.write(data)
+
+    print(f"  Patched {count} bctrl calls → ps3_indirect_call")
+    return count
+
+
 def print_stats(recomp_dir: str) -> None:
     """Print statistics about the recompiled code."""
     cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
@@ -217,6 +250,9 @@ def main():
 
     print("\n3. Applying fallthrough fix")
     apply_fallthrough_fix(recomp_dir)
+
+    print("\n4. Patching bctrl indirect calls")
+    patch_bctrl(recomp_dir)
 
     print_stats(recomp_dir)
     print("\nDone! Ready to build.")
