@@ -479,10 +479,41 @@ static int64_t bridge_cellVideoOutConfigure(ppu_context* ctx)
  * cellSysmodule — module loading (REAL bridges)
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+/* PS3 module IDs for logging */
+static const char* get_module_name(uint32_t id) {
+    switch (id) {
+    case 0x0000: return "CELL_SYSMODULE_NET";
+    case 0x0001: return "CELL_SYSMODULE_HTTP";
+    case 0x0002: return "CELL_SYSMODULE_HTTP_UTIL";
+    case 0x0003: return "CELL_SYSMODULE_SSL";
+    case 0x000e: return "CELL_SYSMODULE_IO";
+    case 0x0010: return "CELL_SYSMODULE_GCM_SYS";
+    case 0x0011: return "CELL_SYSMODULE_AUDIO";
+    case 0x0012: return "CELL_SYSMODULE_RESC";
+    case 0x0013: return "CELL_SYSMODULE_CAMERA";
+    case 0x0015: return "CELL_SYSMODULE_SYSUTIL";
+    case 0x0016: return "CELL_SYSMODULE_FS";
+    case 0x001b: return "CELL_SYSMODULE_SPURS";
+    case 0x001e: return "CELL_SYSMODULE_FONT";
+    case 0x001f: return "CELL_SYSMODULE_FREETYPE";
+    case 0x0020: return "CELL_SYSMODULE_USBD";
+    case 0x0021: return "CELL_SYSMODULE_SYNC";
+    case 0x0024: return "CELL_SYSMODULE_NETCTL";
+    case 0x0029: return "CELL_SYSMODULE_JPGDEC";
+    case 0x002a: return "CELL_SYSMODULE_PNGDEC";
+    case 0x002e: return "CELL_SYSMODULE_SYSUTIL_NP";
+    case 0x0031: return "CELL_SYSMODULE_SYSUTIL_TROPHY";
+    case 0x0037: return "CELL_SYSMODULE_SYSUTIL_AP";
+    case 0x003a: return "CELL_SYSMODULE_L10N";
+    case 0x0055: return "CELL_SYSMODULE_SAVEDATA";
+    default: return "UNKNOWN";
+    }
+}
+
 static int64_t bridge_cellSysmoduleLoadModule(ppu_context* ctx)
 {
     uint32_t id = (uint32_t)ctx->gpr[3];
-    fprintf(stderr, "[HLE] cellSysmoduleLoadModule(%u)\n", id);
+    fprintf(stderr, "[HLE] cellSysmoduleLoadModule(%u = %s)\n", id, get_module_name(id));
     s32 rc = cellSysmoduleLoadModule(id);
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
     return rc;
@@ -504,6 +535,12 @@ static int64_t bridge_cellSysmoduleUnloadModule(ppu_context* ctx)
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 /* _cellGcmInitBody(cmdSize, ioSize, ioAddress) — maps to cellGcmInit */
+/* Forward declarations for RSX command processor */
+extern "C" {
+    void rsx_state_init(void*);       /* from rsx_commands.c */
+    extern void* rsx_get_backend(void); /* from rsx_commands.c */
+}
+
 static int64_t bridge_cellGcmInitBody(ppu_context* ctx)
 {
     uint32_t cmdSize   = (uint32_t)ctx->gpr[3];
@@ -514,6 +551,26 @@ static int64_t bridge_cellGcmInitBody(ppu_context* ctx)
             cmdSize, ioSize, ioAddress);
 
     s32 rc = cellGcmInit(cmdSize, ioSize, ioAddress);
+
+    if (rc == CELL_OK) {
+        fprintf(stderr, "[HLE] cellGcmInit SUCCESS — RSX initialized\n");
+
+        /* Log the configuration */
+        CellGcmConfig config;
+        cellGcmGetConfiguration(&config);
+        fprintf(stderr, "[HLE]   localAddr=0x%08X localSize=%u MB\n",
+                config.localAddress, config.localSize / (1024*1024));
+        fprintf(stderr, "[HLE]   ioAddr=0x%08X ioSize=%u MB\n",
+                config.ioAddress, config.ioSize / (1024*1024));
+
+        /* Check if a graphics backend is registered */
+        if (rsx_get_backend()) {
+            fprintf(stderr, "[HLE]   Graphics backend: active\n");
+        } else {
+            fprintf(stderr, "[HLE]   Graphics backend: none (null rendering)\n");
+        }
+    }
+
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
     return rc;
 }
@@ -1333,7 +1390,7 @@ static void register_sysPrxForUser(void)
     reg_func(&mod_sysPrxForUser, "sys_lwmutex_destroy", (void*)bridge_sys_lwmutex_destroy);
 
     /* Remaining stubs */
-    reg_func(&mod_sysPrxForUser, "sys_process_is_stack",              (void*)hle_stub);
+    reg_func(&mod_sysPrxForUser, "sys_process_is_stack",              (void*)hle_stub); /* returns 0 = not stack */
     reg_func(&mod_sysPrxForUser, "sys_prx_exitspawn_with_level",     (void*)hle_stub);
     reg_func(&mod_sysPrxForUser, "sys_spu_image_import",             (void*)hle_stub);
     reg_func(&mod_sysPrxForUser, "sys_game_process_exitspawn",       (void*)hle_stub);
