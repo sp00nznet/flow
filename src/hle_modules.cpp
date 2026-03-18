@@ -225,6 +225,14 @@ static int64_t bridge_sys_lwmutex_lock(ppu_context* ctx)
     vm_write64(mutex_addr,      mutex_hle.lock_var);
     vm_write32(mutex_addr + 12, mutex_hle.recursive_count);
 
+    /* Debug: log state */
+    static int s_lock_log = 0;
+    if (s_lock_log < 5) {
+        fprintf(stderr, "[HLE] lock return: SP=0x%08X LR=0x%llX\n",
+                (uint32_t)ctx->gpr[1], (unsigned long long)ctx->lr);
+        s_lock_log++;
+    }
+
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
     return rc;
 }
@@ -266,6 +274,14 @@ static int64_t bridge_sys_lwmutex_unlock(ppu_context* ctx)
 
     vm_write64(mutex_addr,      mutex_hle.lock_var);
     vm_write32(mutex_addr + 12, mutex_hle.recursive_count);
+
+    /* Debug: log state after unlock to trace crash */
+    static int s_unlock_log = 0;
+    if (s_unlock_log < 5) {
+        fprintf(stderr, "[HLE] unlock return: SP=0x%08X LR=0x%llX r3=%d\n",
+                (uint32_t)ctx->gpr[1], (unsigned long long)ctx->lr, (int)rc);
+        s_unlock_log++;
+    }
 
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
     return rc;
