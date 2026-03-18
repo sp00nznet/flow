@@ -123,8 +123,23 @@ int main(int argc, char* argv[])
     /* 4. Initialize stack allocator. */
     vm_stack_alloc_init(&g_vm_stack_alloc);
 
-    /* 5. Commit RSX memory region (flOw maps rodata+data at 0x10000000). */
+    /* 5. Commit memory regions.
+     * The PS3 has 256MB main RAM. We commit:
+     *   - BSS/heap area (0x00900000 - 0x10000000) — CRT malloc uses this
+     *   - RSX region (0x10000000 - 0x20000000) — ELF rodata + RSX local mem
+     *   - Extra heap (0x20000000 - 0x30000000) — additional malloc space
+     */
     {
+        /* Main heap / BSS region */
+        int32_t heap_rc = vm_commit(0x00900000, 0x10000000 - 0x00900000);
+        if (heap_rc != CELL_OK) {
+            fprintf(stderr, "WARNING: Failed to commit heap region (0x%08X)\n", (unsigned)heap_rc);
+        } else {
+            printf("[init] Heap region committed: 0x00900000 - 0x10000000 (%u MB)\n",
+                   (0x10000000 - 0x00900000) / (1024 * 1024));
+        }
+
+        /* RSX region (rodata, data, local memory) */
         int32_t rsx_rc = vm_commit(VM_RSX_BASE, VM_RSX_SIZE);
         if (rsx_rc != CELL_OK) {
             fprintf(stderr, "ERROR: Failed to commit RSX region (0x%08X)\n", (unsigned)rsx_rc);
@@ -132,6 +147,12 @@ int main(int argc, char* argv[])
         }
         printf("[init] RSX region committed: 0x%08X - 0x%08X\n",
                VM_RSX_BASE, VM_RSX_BASE + VM_RSX_SIZE);
+
+        /* Extra heap for large allocations */
+        int32_t extra_rc = vm_commit(0x20000000, 0x10000000);
+        if (extra_rc == CELL_OK) {
+            printf("[init] Extra heap committed: 0x20000000 - 0x30000000 (256 MB)\n");
+        }
     }
 
     /* 6. Load ELF data segments into virtual memory. */
