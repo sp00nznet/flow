@@ -208,7 +208,7 @@ def patch_bctrl(recomp_dir: str) -> int:
         with open(cpp_path, "wb") as f:
             f.write(data)
 
-    print(f"  Patched {count} bctrl calls → ps3_indirect_call")
+    print(f"  Patched {count} bctrl calls -> ps3_indirect_call")
     return count
 
 
@@ -252,7 +252,7 @@ def patch_malloc(recomp_dir: str) -> int:
     with open(cpp_path, "wb") as f:
         f.write(data)
 
-    print("  Patched func_006B738C → hle_guest_malloc")
+    print("  Patched func_006B738C -> hle_guest_malloc")
     return 1
 
 
@@ -298,7 +298,7 @@ def main():
     print("\n4. Patching bctrl indirect calls")
     patch_bctrl(recomp_dir)
 
-    print("\n5. Patching malloc → HLE bump allocator")
+    print("\n5. Patching malloc -> HLE bump allocator")
     patch_malloc(recomp_dir)
 
     print_stats(recomp_dir)
