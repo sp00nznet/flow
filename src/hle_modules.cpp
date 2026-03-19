@@ -543,6 +543,7 @@ static int64_t bridge_cellSysmoduleUnloadModule(ppu_context* ctx)
 extern "C" {
     void rsx_state_init(void*);       /* from rsx_commands.c */
     extern void* rsx_get_backend(void); /* from rsx_commands.c */
+    void hle_guest_malloc(ppu_context* ctx); /* from malloc_override.cpp */
 }
 
 static int64_t bridge_cellGcmInitBody(ppu_context* ctx)
@@ -600,14 +601,34 @@ static int64_t bridge_cellGcmGetConfiguration(ppu_context* ctx)
     return rc;
 }
 
+/* Guest address for the GCM control register mirror */
+static uint32_t g_gcm_control_guest = 0;
+
 /* cellGcmGetControlRegister() → r3 = pointer to CellGcmControl */
 static int64_t bridge_cellGcmGetControlRegister(ppu_context* ctx)
 {
-    CellGcmControl* ctrl = cellGcmGetControlRegister();
-    /* Return as a host pointer cast — the game will access this through
-     * generated memory ops. For now, return a sentinel that won't crash
-     * on null check. The real value is in host memory. */
-    ctx->gpr[3] = ctrl ? (uint64_t)(uintptr_t)((uint8_t*)ctrl - vm_base) : 0;
+    /* The game expects a guest address pointing to a CellGcmControl struct
+     * (put, get, ref — 3 u32 values = 12 bytes). We allocate this in guest
+     * memory so vm_read/vm_write can access it. */
+    if (g_gcm_control_guest == 0) {
+        /* Allocate in our heap region */
+        /* hle_guest_malloc declared at top of file */
+        ppu_context tmp = *ctx;
+        tmp.gpr[3] = 64; /* allocate 64 bytes for control struct */
+        hle_guest_malloc(&tmp);
+        g_gcm_control_guest = (uint32_t)tmp.gpr[3];
+
+        if (g_gcm_control_guest) {
+            /* Initialize: put=0, get=0, ref=0 */
+            vm_write32(g_gcm_control_guest + 0, 0); /* put */
+            vm_write32(g_gcm_control_guest + 4, 0); /* get */
+            vm_write32(g_gcm_control_guest + 8, 0); /* ref */
+            fprintf(stderr, "[HLE] cellGcmGetControlRegister -> 0x%08X\n",
+                    g_gcm_control_guest);
+        }
+    }
+
+    ctx->gpr[3] = g_gcm_control_guest;
     return 0;
 }
 
@@ -734,13 +755,29 @@ static int64_t bridge_cellGcmSetInvalidateTile(ppu_context* ctx)
     return 0;
 }
 
+/* Guest address for label array mirror */
+static uint32_t g_gcm_labels_guest = 0;
+
 /* cellGcmGetLabelAddress(index) → r3 = pointer */
 static int64_t bridge_cellGcmGetLabelAddress(ppu_context* ctx)
 {
     uint8_t index = (uint8_t)ctx->gpr[3];
-    uint32_t* addr = cellGcmGetLabelAddress(index);
-    /* Convert host pointer back to guest address offset */
-    ctx->gpr[3] = addr ? (uint64_t)(uintptr_t)((uint8_t*)addr - vm_base) : 0;
+
+    /* Allocate label array in guest memory on first call (256 labels × 4 bytes) */
+    if (g_gcm_labels_guest == 0) {
+        /* hle_guest_malloc declared at top of file */
+        ppu_context tmp = *ctx;
+        tmp.gpr[3] = 256 * 4 + 64; /* 256 labels + padding */
+        hle_guest_malloc(&tmp);
+        g_gcm_labels_guest = (uint32_t)tmp.gpr[3];
+        fprintf(stderr, "[HLE] cellGcmGetLabelAddress: allocated label array at 0x%08X\n",
+                g_gcm_labels_guest);
+    }
+
+    if (g_gcm_labels_guest && index < 256)
+        ctx->gpr[3] = g_gcm_labels_guest + index * 4;
+    else
+        ctx->gpr[3] = 0;
     return 0;
 }
 
