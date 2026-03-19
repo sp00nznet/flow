@@ -147,7 +147,11 @@ static int64_t bridge_sys_process_exit(ppu_context* ctx)
 static int64_t bridge_sys_time_get_system_time(ppu_context* ctx)
 {
     static uint64_t fake_time = 1000000;
+    static int call_count = 0;
     fake_time += 16667; /* ~60fps frame time */
+    call_count++;
+    if (call_count <= 3 || call_count % 1000 == 0)
+        fprintf(stderr, "[HLE] sys_time_get_system_time (call #%d)\n", call_count);
     ctx->gpr[3] = fake_time;
     return 0;
 }

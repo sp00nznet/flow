@@ -127,8 +127,10 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
 
     if (func) {
         static int s_log_count = 0;
-        if (s_log_count < 20) {
-            fprintf(stderr, "[dispatch] bctrl -> 0x%08X\n", target);
+        static int s_call_count = 0;
+        s_call_count++;
+        if (s_log_count < 20 || (s_call_count % 10000 == 0)) {
+            fprintf(stderr, "[dispatch] bctrl -> 0x%08X (call #%d)\n", target, s_call_count);
             s_log_count++;
         }
         func((void*)ctx);
