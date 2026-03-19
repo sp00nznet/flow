@@ -129,11 +129,17 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
         static int s_log_count = 0;
         static int s_call_count = 0;
         s_call_count++;
-        if (s_log_count < 20 || (s_call_count % 10000 == 0)) {
-            fprintf(stderr, "[dispatch] bctrl -> 0x%08X (call #%d)\n", target, s_call_count);
+        if (s_log_count < 200 || (s_call_count % 1000 == 0)) {
+            fprintf(stderr, "[dispatch] bctrl -> 0x%08X (call #%d) [func=%p]\n",
+                    target, s_call_count, (void*)func);
+            fflush(stderr);
             s_log_count++;
         }
         func((void*)ctx);
+        if (s_call_count <= 20) {
+            fprintf(stderr, "[dispatch] returned from 0x%08X\n", target);
+            fflush(stderr);
+        }
     } else {
         static int s_miss_count = 0;
         if (s_miss_count < 20) {
