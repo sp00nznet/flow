@@ -15,14 +15,15 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | Title | flOw |
 | Title ID | NPUA80001 |
 | Engine | PhyreEngine (Sony) |
-| Functions discovered | 68,376 (OPD + heuristic + branch targets) |
-| Functions lifted to C | 68,376 (100%) |
+| Functions discovered | 91,758 (OPD + heuristic + branch target splitting) |
+| Functions lifted to C | 91,758 (100%) |
 | Imported libraries | 12 |
 | Imported functions | 140/140 resolved (100%) |
-| Binary size | ~10 MB (ELF) → ~40 MB (exe) |
+| Binary size | ~10 MB (ELF) → ~45 MB (exe) |
 | HLE bridges | 7/12 real (cellSysutil, cellGcmSys, cellAudio, cellPad, cellFs, cellSysmodule, sysPrxForUser) |
-| Remaining TODOs | ~24,660 (mostly VMX/AltiVec) |
-| ps3recomp version | v0.4.0 |
+| Remaining TODOs | ~10,000 (mostly VMX comparison + remaining unrecognized op4) |
+| Indirect calls | 20,030 bctrl sites → hash table dispatch with OPD resolution |
+| ps3recomp version | v0.4.0+ |
 | Target | Windows x86-64 (Linux planned) |
 
 ### Phase Progress
@@ -34,27 +35,61 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | Binary analysis | **Complete** | 51,658 functions via OPD + heuristic analysis |
 | NID resolution | **Complete** | 140/140 import NIDs mapped to function names |
 | ELF structural analysis | **Complete** | Segments, sections, OPD, TOC, memory map |
-| PPU lifting | **Complete** | 68,376 functions lifted to C++ |
+| PPU lifting | **Complete** | 91,758 functions lifted to C++ (190 MB source) |
 | Runtime linking | **Complete** | Builds and links against ps3recomp runtime |
 | HLE module registration | **Complete** | 12 modules, 7 with real HLE bridges |
-| Game boot | **Working** | CRT entry → TLS → mutex init → malloc |
-| Graphics backend | Planned | RSX → D3D12 translation |
+| CRT startup | **Complete** | TLS → mutexes → malloc → static constructors |
+| Engine init | **Running** | 16+ PhyreEngine constructors executing via bctrl dispatch |
+| Graphics backend | **Ready** | D3D12 device + PSO + vertex buffer + clear + present |
 | Audio backend | **Wired** | cellAudio → WASAPI via ps3recomp |
 | Input backend | **Wired** | cellPad → XInput via ps3recomp |
-| Full gameplay | In Progress | Debugging CRT startup and game init |
+| Full gameplay | In Progress | Debugging engine init (dcbz memory zeroing) |
 
 ### What Works Now
 
-- **68,376 PPC64 functions** lifted to native C++ (extended from 51K with branch target analysis)
-- **7 HLE modules with real bridges** — proper PPC64 ABI parameter extraction, BE struct output, host OS backends
-- **Real WASAPI audio** via ps3recomp's cellAudio mixing thread
-- **Real XInput gamepad** via ps3recomp's cellPad backend
-- **Real filesystem I/O** via ps3recomp's cellFs path translation
-- **Real lightweight mutexes** via CRITICAL_SECTION-backed sysPrxForUser
-- **CRT startup progresses** through TLS init → mutex creation → malloc
-- **All ELF segments** loaded into 4 GB virtual memory (text, data, rodata, BSS, RSX region)
-- **LV2 syscall dispatch** with sys_tty_write for CRT debug output
-- **NID-based HLE dispatch** for all 140 imports, with TOC save fix for PPC64 ABI compliance
+- **91,758 functions** lifted to native C++ with 12,957 fallthrough fixes and 20,030 bctrl dispatch sites
+- **CRT startup COMPLETE** — TLS init, 6 lwmutex creates, 4 malloc allocations, thread ID query, mutex lock/unlock
+- **16+ static constructors** executing via indirect call dispatch (PhyreEngine init)
+- **VMX/AltiVec** — vector loads, stores, float arithmetic, permute, select, compare all working
+- **7 HLE modules with real bridges** — PPC64 ABI parameter extraction, BE struct output, host OS backends
+- **HLE malloc** — bump allocator bypassing CRT's Dinkumware heap (0x00A00000 - 0x10000000)
+- **Indirect call dispatch** — 91,758-entry hash table with OPD resolution for function pointer calls
+- **D3D12 window** — opens on startup, RSX null/D3D12 backend ready for rendering
+- **Real WASAPI audio**, **XInput gamepad**, **filesystem I/O**, **lightweight mutexes**
+- **LV2 syscall dispatch** with sys_tty_write/read for CRT debug output
+- **~10,000 TODO instructions** remaining (down from 27,000 — VMX coverage at ~80%)
+
+### Build Pipeline (Fully Automated)
+
+```bash
+# 1. Run the lifter (~2-3 hours for 92K functions)
+python tools/recompile.py --skip-find --functions-file combined_functions_split.json \
+    --ps3recomp-dir D:/recomp/ps3
+
+# 2. Post-process (rename, patch header, fallthrough, bctrl, malloc)
+python tools/post_lift.py --recomp-dir src/recomp
+
+# 3. Generate missing stubs
+python tools/gen_stubs.py --recomp-dir src/recomp
+
+# 4. Build
+cmake -B build -DPS3RECOMP_DIR=D:/recomp/ps3
+cmake --build build --config Release
+```
+
+### Technical Discoveries
+
+These findings apply to ALL ps3recomp game ports:
+
+1. **TOC save in import stubs** — The PPC64 ABI requires saving r2 (TOC) to sp+40 before inter-module calls. The lifter doesn't emit this instruction. Import stubs must save TOC in their `nid_dispatch()` function or all subsequent TOC-relative loads crash.
+
+2. **Split-function fallthrough** — The lifter splits PPC functions at boundary points, creating multiple C functions. When a function ends without `blr`/`b`, the lifter must emit a call to the next function. Without this, function prologues return before executing their body.
+
+3. **dcbz must zero memory** — `dcbz` (data cache block zero) is NOT safe to no-op. Games use dcbz loops for bulk memory initialization. No-oping dcbz creates infinite loops (CTR computed from huge byte counts) and leaves memory regions uninitialized, causing later crashes.
+
+4. **Guest malloc bypass** — The PS3 CRT's Dinkumware malloc requires OS-level heap initialization that recomp doesn't replicate. Replace with a bump allocator in committed guest VM memory.
+
+5. **Initial LR** — Set ctx.lr to the `sys_process_exit` import stub address before entering the game. The PS3 OS sets LR to the exit handler; leaving it at 0 propagates NULL through the entire CRT stack.
 
 ## Import Map
 
@@ -62,11 +97,14 @@ flOw imports 140 functions from 12 PS3 system libraries:
 
 | Library | Functions | HLE Status | Key APIs |
 |---|---|---|---|
-| **sys_net** | 21 | Stubbed | BSD sockets — socket, bind, connect, send, recv, poll |
-| **cellGcmSys** | 18 | Stubbed | GPU init, display buffers, flip, tile/zcull, memory mapping |
-| **sys_io** | 17 | Stubbed | Pad, Keyboard, Mouse input |
-| **cellSysutil** | 15 | Stubbed | Video/audio config, save data, message dialogs |
-| **sysPrxForUser** | 15 | **Partial** | TLS init, thread create/exit, lwmutex, process exit |
+| **sysPrxForUser** | 15 | **Real** | TLS init, lwmutex create/lock/unlock/destroy, thread create, process exit, time |
+| **cellSysutil** | 15 | **Real** | RegisterCallback, GetSystemParamInt/String, VideoOutGetState/GetResolution/Configure |
+| **cellGcmSys** | 18 | **Real** | Init, GetConfiguration, GetControlRegister, SetDisplayBuffer, MapMainMemory, SetTile, SetFlip |
+| **cellSysmodule** | 4 | **Real** | LoadModule/UnloadModule with module ID name logging |
+| **cellAudio** | 7 | **Real** | Init, PortOpen/Close/Start/Stop, GetPortConfig (WASAPI backend) |
+| **sys_io** | 17 | **Real** | cellPadInit/End/GetData/GetInfo (XInput), keyboard/mouse stubs |
+| **sys_fs** | 11 | **Real** | cellFsOpen/Close/Read/Write/Lseek/Fstat/Opendir (host filesystem) |
+| **sys_net** | 21 | Stubbed | BSD sockets — not needed for offline play |
 | **cellSpurs** | 14 | Stubbed | SPU workload management |
 | **sys_fs** | 11 | Stubbed | File I/O — open, read, write, close, stat |
 | **sceNp** | 10 | Stubbed | PlayStation Network services |
