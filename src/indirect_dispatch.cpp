@@ -132,6 +132,8 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
         static int s_log_count = 0;
         static int s_call_count = 0;
         s_call_count++;
+
+        /* (skip list removed — constructors depend on each other) */
         if (s_log_count < 200 || (s_call_count % 1000 == 0)) {
             fprintf(stderr, "[dispatch] bctrl -> 0x%08X (call #%d) [func=%p]\n",
                     target, s_call_count, (void*)func);
@@ -139,9 +141,12 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
             s_log_count++;
         }
         {
-            /* Save full PPU context before call for crash recovery */
-            ppu_context saved_ctx = *ctx;
+            /* Save TOC and SP before call — constructors may corrupt these */
+            uint64_t saved_toc = ctx->gpr[2];
+            uint64_t saved_sp = ctx->gpr[1];
+            ppu_context saved_ctx;
 #ifdef _WIN32
+            saved_ctx = *ctx;
             __try {
 #endif
             func((void*)ctx);
@@ -152,10 +157,21 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
                 fflush(stderr);
                 /* Restore full context to pre-call state */
                 *ctx = saved_ctx;
-                /* Set r3=0 to indicate the "function returned OK" to caller */
                 ctx->gpr[3] = 0;
             }
 #endif
+            /* Check if TOC was corrupted by this call */
+            if (ctx->gpr[2] != saved_toc && s_call_count >= 20) {
+                fprintf(stderr, "[dispatch] TOC corrupted by call #%d: was 0x%llX now 0x%llX\n",
+                        s_call_count, (unsigned long long)saved_toc,
+                        (unsigned long long)ctx->gpr[2]);
+                fflush(stderr);
+            }
+            /* Always restore TOC */
+            ctx->gpr[2] = saved_toc;
+            /* Restore SP if it was corrupted (sign extension) */
+            if ((ctx->gpr[1] >> 32) != 0 && (ctx->gpr[1] >> 32) != 0xFFFFFFFF)
+                ctx->gpr[1] = saved_sp;
         }
         if (s_call_count <= 20) {
             fprintf(stderr, "[dispatch] returned from 0x%08X\n", target);
