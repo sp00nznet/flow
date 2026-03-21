@@ -61,6 +61,7 @@ extern "C" const RecompiledFunc g_recompiled_funcs[];
 extern "C" const size_t         g_recompiled_func_count;
 extern "C" void recomp_game_main(void* ctx);
 extern "C" void flow_register_hle_modules(void);
+extern "C" void ps3_trampoline_run(ppu_context* ctx, void (*func)(void*));
 
 /* VM bridge functions */
 extern "C" void vm_write32(uint64_t addr, uint32_t val);
@@ -79,6 +80,17 @@ extern "C" void func_006B738C(ppu_context* ctx);  /* malloc */
 extern "C" int rsx_null_backend_init(uint32_t w, uint32_t h, const char* title);
 extern "C" void rsx_null_backend_shutdown(void);
 extern "C" int rsx_null_backend_pump_messages(void);
+
+/* Trampoline continuation (from indirect_dispatch.cpp) */
+extern "C" void (*g_trampoline_fn)(void*);
+
+/* Abort redirect (from hle_modules.cpp) */
+#include <setjmp.h>
+extern "C" {
+    jmp_buf g_abort_jmp;
+    int g_abort_redirect = 0;
+}
+extern "C" void func_000CB9CC(ppu_context* ctx);  /* game main */
 
 /* ---------------------------------------------------------------------------
  * Banner
@@ -151,6 +163,17 @@ int main(int argc, char* argv[])
 
     /* 4. Initialize stack allocator. */
     vm_stack_alloc_init(&g_vm_stack_alloc);
+
+    /* Verify stack region is accessible */
+    {
+        volatile uint8_t* test = vm_base + 0xD0000000;
+        *test = 0x42;
+        if (*test == 0x42) {
+            printf("[init] Stack region base (0xD0000000) verified accessible\n");
+        } else {
+            fprintf(stderr, "ERROR: Stack region base NOT accessible!\n");
+        }
+    }
 
     /* 5. Commit memory regions.
      * The PS3 has 256MB main RAM. We commit:
@@ -296,24 +319,59 @@ int main(int argc, char* argv[])
 
     printf("[init] Entering game at 0x%X...\n\n", FLOW_ENTRY_POINT);
 
+    /* Run the CRT startup.  If the CRT aborts (constructor failures from
+     * split-function backward-branch recursion), longjmp back here and
+     * redirect directly to game main. */
+    if (setjmp(g_abort_jmp) == 0) {
 #ifdef _WIN32
-    /* Install SEH handler to catch crashes in recompiled code */
-    __try {
+        __try {
 #endif
-    /* Call the recompiled game entry point */
-    recomp_game_main(&ctx);
+        ps3_trampoline_run(&ctx, recomp_game_main);
 #ifdef _WIN32
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        DWORD code = GetExceptionCode();
-        fprintf(stderr, "\n[CRASH] Exception 0x%08lX in recompiled code\n", code);
-        fprintf(stderr, "[CRASH] Last CIA: 0x%08X, r1(SP)=0x%llX, r2(TOC)=0x%llX\n",
-                ctx.cia, (unsigned long long)ctx.gpr[1], (unsigned long long)ctx.gpr[2]);
-        fprintf(stderr, "[CRASH] r3=0x%llX  r4=0x%llX  r13=0x%llX  LR=0x%llX\n",
-                (unsigned long long)ctx.gpr[3], (unsigned long long)ctx.gpr[4],
-                (unsigned long long)ctx.gpr[13], (unsigned long long)ctx.lr);
-        return 1;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            DWORD code = GetExceptionCode();
+            fprintf(stderr, "\n[CRASH] Exception 0x%08lX in recompiled code\n", code);
+            fprintf(stderr, "[CRASH] Last CIA: 0x%08X, r1(SP)=0x%llX, r2(TOC)=0x%llX\n",
+                    ctx.cia, (unsigned long long)ctx.gpr[1], (unsigned long long)ctx.gpr[2]);
+            fprintf(stderr, "[CRASH] r3=0x%llX  r4=0x%llX  r13=0x%llX  LR=0x%llX\n",
+                    (unsigned long long)ctx.gpr[3], (unsigned long long)ctx.gpr[4],
+                    (unsigned long long)ctx.gpr[13], (unsigned long long)ctx.lr);
+        }
+#endif
     }
+
+    if (g_abort_redirect) {
+        printf("\n[init] CRT abort caught — redirecting to game main (func_000CB9CC)\n");
+        /* Reset PPU context for a clean game main entry.
+         * Reuse the original stack (which is still committed). */
+        ppu_context_init(&ctx);
+        ppu_set_stack(&ctx, stack_addr, FLOW_STACK_SIZE);
+        printf("[init] Reusing stack: 0x%08X (%u KB)\n", stack_addr, FLOW_STACK_SIZE / 1024);
+        ctx.cia = 0x000CB9CC;
+        ctx.gpr[2] = 0x008969A8;  /* TOC */
+        ctx.gpr[13] = 0x0F007000; /* TLS (from earlier init) */
+        ctx.lr = 0x008175FC;       /* sys_process_exit stub */
+        /* null backchain to terminate stack walks */
+        vm_write32((uint32_t)ctx.gpr[1], 0);
+        vm_write32((uint32_t)ctx.gpr[1] + 4, 0);
+
+        g_abort_redirect = 0;  /* don't redirect again */
+#ifdef _WIN32
+        __try {
 #endif
+        ps3_trampoline_run(&ctx, (void(*)(void*))func_000CB9CC);
+#ifdef _WIN32
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            DWORD code = GetExceptionCode();
+            fprintf(stderr, "\n[CRASH] Exception 0x%08lX in game main\n", code);
+            fprintf(stderr, "[CRASH] Last CIA: 0x%08X, r1(SP)=0x%llX, r2(TOC)=0x%llX\n",
+                    ctx.cia, (unsigned long long)ctx.gpr[1], (unsigned long long)ctx.gpr[2]);
+            fprintf(stderr, "[CRASH] r3=0x%llX  r4=0x%llX  r13=0x%llX  LR=0x%llX\n",
+                    (unsigned long long)ctx.gpr[3], (unsigned long long)ctx.gpr[4],
+                    (unsigned long long)ctx.gpr[13], (unsigned long long)ctx.lr);
+        }
+#endif
+    }
 
     /* Cleanup */
     printf("\n[exit] flOw has exited. Shutting down...\n");
