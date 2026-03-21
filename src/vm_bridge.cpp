@@ -27,7 +27,16 @@ extern "C" uint8_t* vm_base;
 ps3_module_registry g_ps3_module_registry = {};
 
 static inline uint8_t* translate(uint64_t addr) {
-    return vm_base + (uint32_t)addr;
+    uint32_t a = (uint32_t)addr;
+    /* Safety: check if truncated address is in committed VM range */
+    if (a >= 0x30000000 && a < 0xD0000000) {
+        static int s_warn = 0;
+        if (s_warn < 5) {
+            fputs("[VM] WARNING: uncommitted access", stderr); fputc(10, stderr);
+            s_warn++;
+        }
+    }
+    return vm_base + a;
 }
 
 extern "C" {
