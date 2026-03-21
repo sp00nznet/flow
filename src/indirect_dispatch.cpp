@@ -138,22 +138,25 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
             fflush(stderr);
             s_log_count++;
         }
+        {
+            /* Save full PPU context before call for crash recovery */
+            ppu_context saved_ctx = *ctx;
 #ifdef _WIN32
-        __try {
+            __try {
 #endif
-        func((void*)ctx);
+            func((void*)ctx);
 #ifdef _WIN32
-        } __except(EXCEPTION_EXECUTE_HANDLER) {
-            fprintf(stderr, "[dispatch] CRASH in bctrl 0x%08X (call #%d)\n", target, s_call_count);
-            fprintf(stderr, "[dispatch] r3=0x%llX r4=0x%llX SP=0x%X\n",
-                    (unsigned long long)ctx->gpr[3],
-                    (unsigned long long)ctx->gpr[4],
-                    (uint32_t)ctx->gpr[1]);
-            fflush(stderr);
-            /* Don't re-throw — let execution continue past this constructor */
-            return;
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                fprintf(stderr, "[dispatch] CRASH in bctrl 0x%08X (call #%d) - RECOVERING\n",
+                        target, s_call_count);
+                fflush(stderr);
+                /* Restore full context to pre-call state */
+                *ctx = saved_ctx;
+                /* Set r3=0 to indicate the "function returned OK" to caller */
+                ctx->gpr[3] = 0;
+            }
+#endif
         }
-#endif
         if (s_call_count <= 20) {
             fprintf(stderr, "[dispatch] returned from 0x%08X\n", target);
             fflush(stderr);
