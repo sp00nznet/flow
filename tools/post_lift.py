@@ -115,6 +115,53 @@ void     vm_write64(uint64_t addr, uint64_t val);
     print(f"  Patched ppu_recomp.h")
 
 
+def insert_drain_trampoline(recomp_dir: str) -> int:
+    """Add DRAIN_TRAMPOLINE(ctx) after every bl (func_XXX) call.
+
+    The lifter now emits trampoline patterns for cross-fragment branches
+    and fallthroughs. But mid-function bl calls are still direct calls.
+    Each direct call may trigger a trampoline chain in the callee, so
+    we need to drain after every call.
+
+    Also adds the global trampoline variable and macro at the top.
+    """
+    cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
+    with open(cpp_path, "r", errors="replace") as f:
+        lines = f.readlines()
+
+    call_re = re.compile(r'^(\s+)(func_[0-9A-Fa-f]{8})\(ctx\);(\s*)$')
+    new_lines = []
+    added = 0
+
+    # Add trampoline global and macro at top (after first #include)
+    header_added = False
+    for i, line in enumerate(lines):
+        new_lines.append(line)
+        if not header_added and line.strip().startswith('#include'):
+            new_lines.append('extern "C" void (*g_trampoline_fn)(void*);\n')
+            new_lines.append('#define DRAIN_TRAMPOLINE(ctx) do { \\\n')
+            new_lines.append('    while (g_trampoline_fn) { \\\n')
+            new_lines.append('        void(*_tf)(void*) = g_trampoline_fn; \\\n')
+            new_lines.append('        g_trampoline_fn = 0; \\\n')
+            new_lines.append('        _tf((void*)(ctx)); \\\n')
+            new_lines.append('    } \\\n')
+            new_lines.append('} while(0)\n\n')
+            header_added = True
+            continue
+
+        m = call_re.match(line)
+        if m:
+            indent = m.group(1)
+            new_lines.append(f'{indent}DRAIN_TRAMPOLINE(ctx);\n')
+            added += 1
+
+    with open(cpp_path, "w", errors="replace") as f:
+        f.writelines(new_lines)
+
+    print(f"  Added {added} DRAIN_TRAMPOLINE calls")
+    return added
+
+
 def apply_fallthrough_fix(recomp_dir: str) -> int:
     """Add fallthrough calls for split functions."""
     cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
@@ -292,20 +339,14 @@ def main():
     print("\n2. Patching header")
     patch_header(recomp_dir)
 
-    print("\n3. Applying fallthrough fix")
-    apply_fallthrough_fix(recomp_dir)
+    print("\n3. Inserting trampoline drain after bl calls")
+    insert_drain_trampoline(recomp_dir)
 
     print("\n4. Patching bctrl indirect calls")
     patch_bctrl(recomp_dir)
 
     print("\n5. Patching malloc -> HLE bump allocator")
     patch_malloc(recomp_dir)
-
-    print("\n6. Converting fallthroughs to trampolines")
-    import subprocess
-    tramp_script = os.path.join(os.path.dirname(__file__), "convert_trampolines.py")
-    subprocess.run([sys.executable, tramp_script, os.path.join(recomp_dir, "ppu_recomp.cpp")],
-                   check=True)
 
     print_stats(recomp_dir)
     print("\nDone! Ready to build.")
