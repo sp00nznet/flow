@@ -153,6 +153,9 @@ elseif(MSVC)
         /Zc:__cplusplus
         /bigobj
     )
+    # 256 MB native stack — recompiled split-function chains create very deep
+    # call stacks that exceed the default 1 MB.
+    target_link_options(flow PRIVATE /STACK:0x40000000)
     target_compile_definitions(flow PRIVATE
         _CRT_SECURE_NO_WARNINGS
     )

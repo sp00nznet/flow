@@ -301,6 +301,12 @@ def main():
     print("\n5. Patching malloc -> HLE bump allocator")
     patch_malloc(recomp_dir)
 
+    print("\n6. Converting fallthroughs to trampolines")
+    import subprocess
+    tramp_script = os.path.join(os.path.dirname(__file__), "convert_trampolines.py")
+    subprocess.run([sys.executable, tramp_script, os.path.join(recomp_dir, "ppu_recomp.cpp")],
+                   check=True)
+
     print_stats(recomp_dir)
     print("\nDone! Ready to build.")
 

@@ -135,10 +135,24 @@ static int64_t bridge_sys_initialize_tls(ppu_context* ctx)
 }
 
 /* sys_process_exit(status) */
+/* sys_process_exit redirect: set flag for main() to redirect to game main */
+#include <setjmp.h>
+extern "C" jmp_buf g_abort_jmp;
+extern "C" int g_abort_redirect;
+
 static int64_t bridge_sys_process_exit(ppu_context* ctx)
 {
     int32_t status = (int32_t)ctx->gpr[3];
     fprintf(stderr, "[HLE] sys_process_exit(%d)\n", status);
+
+    /* If CRT aborts during startup, longjmp back to main() to redirect
+     * to game main.  This completely escapes the corrupted CRT context. */
+    if (status != 0 && !g_abort_redirect) {
+        g_abort_redirect = 1;
+        fprintf(stderr, "[HLE] CRT abort intercepted — longjmp to main\n");
+        fflush(stderr);
+        longjmp(g_abort_jmp, 1);
+    }
     exit(status);
     return 0;
 }
@@ -483,33 +497,51 @@ static int64_t bridge_cellVideoOutConfigure(ppu_context* ctx)
  * cellSysmodule — module loading (REAL bridges)
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/* PS3 module IDs for logging */
+/* PS3 module IDs for logging (must match cellSysmodule.h) */
 static const char* get_module_name(uint32_t id) {
     switch (id) {
-    case 0x0000: return "CELL_SYSMODULE_NET";
-    case 0x0001: return "CELL_SYSMODULE_HTTP";
-    case 0x0002: return "CELL_SYSMODULE_HTTP_UTIL";
-    case 0x0003: return "CELL_SYSMODULE_SSL";
-    case 0x000e: return "CELL_SYSMODULE_IO";
-    case 0x0010: return "CELL_SYSMODULE_GCM_SYS";
-    case 0x0011: return "CELL_SYSMODULE_AUDIO";
-    case 0x0012: return "CELL_SYSMODULE_RESC";
-    case 0x0013: return "CELL_SYSMODULE_CAMERA";
-    case 0x0015: return "CELL_SYSMODULE_SYSUTIL";
-    case 0x0016: return "CELL_SYSMODULE_FS";
-    case 0x001b: return "CELL_SYSMODULE_SPURS";
-    case 0x001e: return "CELL_SYSMODULE_FONT";
-    case 0x001f: return "CELL_SYSMODULE_FREETYPE";
-    case 0x0020: return "CELL_SYSMODULE_USBD";
-    case 0x0021: return "CELL_SYSMODULE_SYNC";
-    case 0x0024: return "CELL_SYSMODULE_NETCTL";
-    case 0x0029: return "CELL_SYSMODULE_JPGDEC";
-    case 0x002a: return "CELL_SYSMODULE_PNGDEC";
-    case 0x002e: return "CELL_SYSMODULE_SYSUTIL_NP";
-    case 0x0031: return "CELL_SYSMODULE_SYSUTIL_TROPHY";
-    case 0x0037: return "CELL_SYSMODULE_SYSUTIL_AP";
-    case 0x003a: return "CELL_SYSMODULE_L10N";
-    case 0x0055: return "CELL_SYSMODULE_SAVEDATA";
+    case 0x0000: return "NET";
+    case 0x0001: return "HTTP";
+    case 0x0002: return "HTTP_UTIL";
+    case 0x0003: return "SSL";
+    case 0x0004: return "HTTPS";
+    case 0x0005: return "VDEC";
+    case 0x0006: return "ADEC";
+    case 0x0007: return "DMUX";
+    case 0x0008: return "VPOST";
+    case 0x0009: return "RTC";
+    case 0x000A: return "SPURS";
+    case 0x000B: return "OVIS";
+    case 0x000C: return "SHEAP";
+    case 0x000D: return "SYNC";
+    case 0x000E: return "SYNC2";
+    case 0x000F: return "FS";
+    case 0x0010: return "JPGDEC";
+    case 0x0011: return "GCM_SYS";
+    case 0x0012: return "AUDIO";
+    case 0x0013: return "PAMF";
+    case 0x0014: return "ATRAC3PLUS";
+    case 0x0015: return "NETCTL";
+    case 0x0016: return "SYSUTIL";
+    case 0x0017: return "SYSUTIL_NP";
+    case 0x0018: return "IO";
+    case 0x0019: return "PNGDEC";
+    case 0x001A: return "FONT";
+    case 0x001B: return "FREETYPE";
+    case 0x001C: return "USBD";
+    case 0x001D: return "SAIL";
+    case 0x001E: return "L10N";
+    case 0x001F: return "RESC";
+    case 0x0020: return "DAISY";
+    case 0x0021: return "KEY2CHAR";
+    case 0x0022: return "MIC";
+    case 0x0023: return "AVCONF_EXT";
+    case 0x0024: return "USERINFO";
+    case 0x0025: return "SAVEDATA";
+    case 0x0026: return "GAME";
+    case 0x0027: return "SUBDISPLAY";
+    case 0x0028: return "GAME_EXEC";
+    case 0x0029: return "NP_TROPHY";
     default: return "UNKNOWN";
     }
 }
