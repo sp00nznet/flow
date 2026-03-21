@@ -97,9 +97,24 @@ static void print_banner(void)
  * Main
  * -----------------------------------------------------------------------*/
 
+
+#ifdef _WIN32
+static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ep) {
+    if (ep && ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+        fprintf(stderr, "[CRASH-VEH] AV at RIP=%p addr=%p\n",
+                (void*)ep->ContextRecord->Rip,
+                (void*)ep->ExceptionRecord->ExceptionInformation[1]);
+        fflush(stderr);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
 int main(int argc, char* argv[])
 {
     setvbuf(stdout, NULL, _IONBF, 0);
+#ifdef _WIN32
+    AddVectoredExceptionHandler(1, crash_handler);
+#endif
     setvbuf(stderr, NULL, _IONBF, 0);
     fprintf(stderr, "[boot] flow.exe starting...\n");
     print_banner();
@@ -144,6 +159,9 @@ int main(int argc, char* argv[])
      *   - Extra heap (0x20000000 - 0x30000000) — additional malloc space
      */
     {
+        /* Low memory guard + ELF region (0x00000000 - 0x00900000) */
+        vm_commit(0x00000000, 0x00900000);
+
         /* Main heap / BSS region */
         int32_t heap_rc = vm_commit(0x00900000, 0x10000000 - 0x00900000);
         if (heap_rc != CELL_OK) {
