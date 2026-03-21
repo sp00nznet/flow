@@ -120,6 +120,7 @@ int main(int argc, char* argv[])
     }
     /* Sync the C++ alias */
     vm::g_base = vm_base;
+    fprintf(stderr, "[init] vm_base = %p\n", (void*)vm_base);
 
     /* 2. Initialize LV2 syscall table. */
     printf("[init] LV2 syscalls...\n");
@@ -161,11 +162,22 @@ int main(int argc, char* argv[])
         printf("[init] RSX region committed: 0x%08X - 0x%08X\n",
                VM_RSX_BASE, VM_RSX_BASE + VM_RSX_SIZE);
 
-        /* Extra heap for large allocations */
+        /* Extra heap for sys_memory_allocate */
         int32_t extra_rc = vm_commit(0x20000000, 0x10000000);
         if (extra_rc == CELL_OK) {
             printf("[init] Extra heap committed: 0x20000000 - 0x30000000 (256 MB)\n");
         }
+
+        /* General purpose region (0x30000000 - 0xC0000000) for game allocations */
+        vm_commit(0x30000000, 0x90000000);
+        printf("[init] General region committed: 0x30000000 - 0xC0000000\n");
+
+        /* RSX VRAM region — commit in chunks to avoid huge single allocation.
+         * PS3 maps RSX local memory at high addresses. */
+        vm_commit(0xC0000000, 0x10000000); /* 0xC0000000 - 0xD0000000 */
+        vm_commit(0xE0000000, 0x10000000); /* 0xE0000000 - 0xF0000000 */
+        vm_commit(0xF0000000, 0x0FFF0000); /* 0xF0000000 - 0xFFFF0000 */
+        printf("[init] RSX VRAM committed: 0xC0-0xD0, 0xE0-0xF0, 0xF0-0xFF (~768 MB)\n");
     }
 
     /* 6. Load ELF data segments into virtual memory. */
