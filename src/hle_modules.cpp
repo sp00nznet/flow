@@ -28,6 +28,12 @@
 #include "runtime/ppu/ppu_context.h"
 #include "runtime/memory/vm.h"
 
+/* Access the syscall table for direct syscall dispatch */
+extern "C" {
+#include "runtime/syscalls/lv2_syscall_table.h"
+}
+extern "C" lv2_syscall_table g_lv2_syscalls;
+
 /* ps3recomp HLE headers — only include headers for modules we actually bridge.
  * Headers using C11 _Atomic (cellSync.h) are incompatible with C++ compilation.
  * Stub-only modules (cellSpurs, cellSync, cellNetCtl, sceNp, sys_net) don't
@@ -339,38 +345,42 @@ static int64_t bridge_sys_lwmutex_destroy(ppu_context* ctx)
     return rc;
 }
 
-/* sys_ppu_thread_create(thread_id_ptr, entry, arg, prio, stacksize, flags, name) */
+/* sys_ppu_thread_create — delegate to runtime's real implementation.
+ * The runtime (sys_ppu_thread.c) uses ppu_context* calling convention. */
+extern "C" int64_t sys_ppu_thread_create_syscall(ppu_context* ctx);
+extern "C" int64_t sys_ppu_thread_exit_syscall(ppu_context* ctx);
+
 static int64_t bridge_sys_ppu_thread_create(ppu_context* ctx)
 {
-    uint32_t tid_addr  = (uint32_t)ctx->gpr[3];
-    uint64_t entry     = ctx->gpr[4]; /* guest entry point */
-    uint64_t arg       = ctx->gpr[5];
-    int32_t  prio      = (int32_t)ctx->gpr[6];
-    uint32_t stacksize = (uint32_t)ctx->gpr[7];
-    uint64_t flags     = ctx->gpr[8];
-    const char* name   = guest_str(ctx->gpr[9]);
+    fprintf(stderr, "[HLE] sys_ppu_thread_create(entry=0x%llx, arg=0x%llx, prio=%d, stack=%u)\n",
+            (unsigned long long)ctx->gpr[4], (unsigned long long)ctx->gpr[5],
+            (int32_t)ctx->gpr[6], (uint32_t)ctx->gpr[7]);
 
-    fprintf(stderr, "[HLE] sys_ppu_thread_create(entry=0x%llx, arg=0x%llx, prio=%d, stack=%u, name=%s)\n",
-            (unsigned long long)entry, (unsigned long long)arg, prio, stacksize,
-            name ? name : "(null)");
-
-    /* For now, just return a fake thread ID. Real threading needs indirect
-     * call dispatch to work first (so the new thread can execute recompiled code). */
+    /* Call the runtime's real thread creation (uses ppu_context* ABI).
+     * This is registered in lv2_syscall_table as syscall 41. */
+    extern lv2_syscall_table g_lv2_syscalls;
+    if (g_lv2_syscalls.handlers[41]) {
+        int64_t rc = g_lv2_syscalls.handlers[41](ctx);
+        return rc;
+    }
+    /* Fallback: fake thread ID */
     static uint64_t next_tid = 2;
+    uint32_t tid_addr = (uint32_t)ctx->gpr[3];
     if (tid_addr)
         vm_write64(tid_addr, next_tid++);
-
-    ctx->gpr[3] = 0; /* CELL_OK */
+    ctx->gpr[3] = 0;
     return 0;
 }
 
-/* sys_ppu_thread_exit(exitcode) */
+/* sys_ppu_thread_exit — delegate to runtime */
 static int64_t bridge_sys_ppu_thread_exit(ppu_context* ctx)
 {
-    uint64_t exitcode = ctx->gpr[3];
-    fprintf(stderr, "[HLE] sys_ppu_thread_exit(0x%llx)\n", (unsigned long long)exitcode);
-    /* In a single-threaded context, this is effectively process exit */
-    ctx->gpr[3] = 0;
+    fprintf(stderr, "[HLE] sys_ppu_thread_exit(0x%llx)\n",
+            (unsigned long long)ctx->gpr[3]);
+    extern lv2_syscall_table g_lv2_syscalls;
+    if (g_lv2_syscalls.handlers[42]) {
+        return g_lv2_syscalls.handlers[42](ctx);
+    }
     return 0;
 }
 
