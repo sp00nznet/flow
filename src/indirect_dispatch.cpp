@@ -52,6 +52,7 @@ static int s_dispatch_initialized = 0;
 extern "C" void (*g_trampoline_fn)(void*) = nullptr;
 extern "C" int g_sp_trace_enabled = 0;
 extern "C" uint32_t g_sp_lowest = 0xFFFFFFFF;
+extern "C" uint64_t g_trampoline_iters = 0;
 
 static uint32_t hash_addr(uint32_t addr)
 {
@@ -146,6 +147,12 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
      * The CRT may set CTR to the OPD address or the actual code address. */
     uint32_t target = (uint32_t)ctx->ctr;
 
+    /* Null target = end of function pointer table or uninitialized CTR */
+    if (target == 0) {
+        ctx->gpr[3] = 0;
+        return;
+    }
+
     /* Try direct lookup first */
     void (*func)(void*) = dispatch_lookup(target);
 
@@ -174,12 +181,11 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
         static int s_call_count = 0;
         s_call_count++;
 
-        /* Enable SP tracing for constructors known to overflow */
-        bool trace_sp = (target == 0x007A8764 || target == 0x006D48BC || target == 0x0062F86C);
-        if (trace_sp) {
-            g_sp_trace_enabled = 1;
-            g_sp_lowest = (uint32_t)ctx->gpr[1];
-        }
+        /* No constructor skipping — let them crash (SEH catches).
+         * CRT will abort → longjmp redirect to game main. */
+
+        /* Enable SP tracing for constructors known to have issues */
+        bool trace_sp = false;
 
         /* (skip list removed — constructors depend on each other) */
         if (s_log_count < 200 || (s_call_count % 1000 == 0)) {

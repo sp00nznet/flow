@@ -171,12 +171,29 @@ static int64_t bridge_sys_time_get_system_time(ppu_context* ctx)
 }
 
 /* sys_ppu_thread_get_id(sys_ppu_thread_t* thread_id) */
+extern "C" jmp_buf g_abort_jmp;
+extern "C" int g_abort_redirect;
 static int64_t bridge_sys_ppu_thread_get_id(ppu_context* ctx)
 {
+    static int s_call_count = 0;
+    s_call_count++;
+
     uint32_t ptr = (uint32_t)ctx->gpr[3];
     if (ptr && vm_base)
         vm_write64(ptr, 1); /* fake thread ID = 1 */
     ctx->gpr[3] = 0;
+
+    /* Detect infinite spin loop during CRT init (before game main).
+     * Only trigger once — after redirect, game main may also call
+     * thread_get_id legitimately. */
+    if (s_call_count > 100000 && g_abort_redirect == 0) {
+        fprintf(stderr, "[HLE] thread_get_id spin detected (%d calls) — triggering abort redirect\n",
+                s_call_count);
+        fflush(stderr);
+        g_abort_redirect = 1;
+        longjmp(g_abort_jmp, 1);
+    }
+
     return 0;
 }
 
