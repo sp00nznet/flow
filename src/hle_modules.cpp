@@ -189,10 +189,16 @@ static int64_t bridge_sys_ppu_thread_get_id(ppu_context* ctx)
         vm_write64(ptr, 1); /* fake thread ID = 1 */
     ctx->gpr[3] = 0;
 
+    /* Log first few calls and every 10000th to trace the spin */
+    if (s_call_count <= 5 || s_call_count % 50000 == 0) {
+        fprintf(stderr, "[HLE] sys_ppu_thread_get_id(ptr=0x%X) call #%d SP=0x%08X LR=0x%08X\n",
+                ptr, s_call_count, (uint32_t)ctx->gpr[1], (uint32_t)ctx->lr);
+        fflush(stderr);
+    }
+
     /* Detect infinite spin loop during CRT init (before game main).
-     * Only trigger once — after redirect, game main may also call
-     * thread_get_id legitimately. */
-    if (s_call_count > 100000 && g_abort_redirect == 0) {
+     * Only trigger once. */
+    if (s_call_count > 500 && g_abort_redirect == 0) {
         fprintf(stderr, "[HLE] thread_get_id spin detected (%d calls) — triggering abort redirect\n",
                 s_call_count);
         fflush(stderr);
