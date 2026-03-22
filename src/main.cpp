@@ -127,7 +127,13 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ep) {
              * regions. Constructors and engine init may touch pages we
              * didn't anticipate. */
             uintptr_t page_base = addr & ~0xFFFULL;
-            void* result = VirtualAlloc((void*)page_base, 0x10000,
+            /* Clamp commit size to not exceed the 4GB VM region end */
+            uintptr_t vm_end = base + 0x100000000ULL;
+            size_t commit_size = 0x10000;
+            if (page_base + commit_size > vm_end)
+                commit_size = (size_t)(vm_end - page_base);
+            if (commit_size == 0) commit_size = 0x1000;
+            void* result = VirtualAlloc((void*)page_base, commit_size,
                                         MEM_COMMIT, PAGE_READWRITE);
             if (result) {
                 static int s_demand_pages = 0;
@@ -256,8 +262,8 @@ int main(int argc, char* argv[])
          * PS3 maps RSX local memory at high addresses. */
         vm_commit(0xC0000000, 0x10000000); /* 0xC0000000 - 0xD0000000 */
         vm_commit(0xE0000000, 0x10000000); /* 0xE0000000 - 0xF0000000 */
-        vm_commit(0xF0000000, 0x0FFF0000); /* 0xF0000000 - 0xFFFF0000 */
-        printf("[init] RSX VRAM committed: 0xC0-0xD0, 0xE0-0xF0, 0xF0-0xFF (~768 MB)\n");
+        vm_commit(0xF0000000, 0x10000000); /* 0xF0000000 - 0xFFFFFFFF (full range) */
+        printf("[init] RSX VRAM committed: 0xC0-0xD0, 0xE0-0xF0, 0xF0-0x100 (~768 MB)\n");
     }
 
     /* 6. Load ELF data segments into virtual memory. */
