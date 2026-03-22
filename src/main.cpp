@@ -26,6 +26,7 @@ extern "C" {
     #include "runtime/syscalls/lv2_syscall_table.h"
     #include "runtime/syscalls/sys_ppu_thread.h"
 }
+/* Need the typedef for the thread entry function pointer */
 
 /* ---------------------------------------------------------------------------
  * Runtime globals
@@ -91,6 +92,7 @@ extern "C" {
     int g_abort_redirect = 0;
 }
 extern "C" void func_000CB9CC(ppu_context* ctx);  /* game main */
+extern "C" void ps3_thread_entry(ppu_context* ctx);  /* thread entry trampoline */
 
 /* ---------------------------------------------------------------------------
  * Banner
@@ -186,6 +188,13 @@ int main(int argc, char* argv[])
 
     /* 3. Register HLE modules (NID-based import resolution). */
     flow_register_hle_modules();
+
+    /* 3b. Set thread entry trampoline for real multi-threading. */
+    {
+        extern ppu_thread_entry_fn g_ppu_thread_entry_trampoline;
+        g_ppu_thread_entry_trampoline = ps3_thread_entry;
+        printf("[init] Thread entry trampoline set\n");
+    }
 
     /* 4. Set up filesystem path mapping. */
     snprintf(g_sys_fs_root, sizeof(g_sys_fs_root), "%s", game_dir);

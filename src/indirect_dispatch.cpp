@@ -49,10 +49,12 @@ static int s_dispatch_initialized = 0;
  * fallthrough sets g_trampoline_fn to the next fragment's host function
  * pointer and returns.  Every call site drains the trampoline chain.
  * -----------------------------------------------------------------------*/
-extern "C" void (*g_trampoline_fn)(void*) = nullptr;
+/* Thread-local trampoline state — each thread has its own chain */
+extern "C" __declspec(thread) void (*g_trampoline_fn)(void*) = nullptr;
+extern "C" __declspec(thread) uint64_t g_trampoline_iters = 0;
+
 extern "C" int g_sp_trace_enabled = 0;
 extern "C" uint32_t g_sp_lowest = 0xFFFFFFFF;
-extern "C" uint64_t g_trampoline_iters = 0;
 
 static uint32_t hash_addr(uint32_t addr)
 {
@@ -313,5 +315,52 @@ extern "C" void ps3_trampoline_run(ppu_context* ctx, void (*func)(void*))
         void (*tfunc)(void*) = g_trampoline_fn;
         g_trampoline_fn = nullptr;
         tfunc((void*)ctx);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Thread entry trampoline — called by the runtime when a new PPU thread
+ * starts.  Looks up the entry address (ctx->cia) in the dispatch table
+ * and runs it with the trampoline chain.
+ * -----------------------------------------------------------------------*/
+
+extern "C" void ps3_thread_entry(ppu_context* ctx)
+{
+    if (!s_dispatch_initialized)
+        dispatch_init();
+
+    uint32_t entry = (uint32_t)ctx->cia;
+
+    /* Try direct lookup */
+    void (*func)(void*) = dispatch_lookup(entry);
+
+    if (!func) {
+        /* Try OPD resolution */
+        extern uint8_t* vm_base;
+        extern uint32_t vm_read32(uint64_t addr);
+        if (entry > 0 && entry < 0x20000000 && vm_base) {
+            uint32_t opd_func = vm_read32(entry);
+            uint32_t opd_toc  = vm_read32(entry + 4);
+            func = dispatch_lookup(opd_func);
+            if (func) {
+                ctx->gpr[2] = opd_toc;
+                entry = opd_func;
+            }
+        }
+    }
+
+    if (func) {
+        fprintf(stderr, "[thread] Thread %llu starting at 0x%08X [func=%p]\n",
+                (unsigned long long)ctx->thread_id, entry, (void*)func);
+        fflush(stderr);
+        ps3_trampoline_run(ctx, func);
+        fprintf(stderr, "[thread] Thread %llu exited (r3=0x%llX)\n",
+                (unsigned long long)ctx->thread_id,
+                (unsigned long long)ctx->gpr[3]);
+        fflush(stderr);
+    } else {
+        fprintf(stderr, "[thread] Thread %llu: entry 0x%08X not found!\n",
+                (unsigned long long)ctx->thread_id, entry);
+        fflush(stderr);
     }
 }
