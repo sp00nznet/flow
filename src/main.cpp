@@ -113,9 +113,39 @@ static void print_banner(void)
 #ifdef _WIN32
 static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ep) {
     if (ep && ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
-        fprintf(stderr, "[CRASH-VEH] AV at RIP=%p addr=%p\n",
-                (void*)ep->ContextRecord->Rip,
-                (void*)ep->ExceptionRecord->ExceptionInformation[1]);
+        uintptr_t addr = ep->ExceptionRecord->ExceptionInformation[1];
+        uintptr_t base = (uintptr_t)vm_base;
+
+        /* Demand-paging only active after CRT redirect to game main.
+         * During CRT, we WANT constructors to crash so the CRT aborts
+         * and we redirect to game main. */
+        if (g_abort_redirect >= 2 && g_abort_redirect != 1 && vm_base && addr >= base && addr < base + 0x100000000ULL) {
+            /* Demand-paging: commit the faulting page on first access.
+             * The PS3 address space is 4GB but we only pre-commit known
+             * regions. Constructors and engine init may touch pages we
+             * didn't anticipate. */
+            uintptr_t page_base = addr & ~0xFFFULL;
+            void* result = VirtualAlloc((void*)page_base, 0x10000,
+                                        MEM_COMMIT, PAGE_READWRITE);
+            if (result) {
+                static int s_demand_pages = 0;
+                s_demand_pages++;
+                if (s_demand_pages <= 20) {
+                    uint32_t guest = (uint32_t)(addr - base);
+                    fprintf(stderr, "[VM-DEMAND] Committed page at guest 0x%08X (#%d)\n",
+                            guest & 0xFFFF0000, s_demand_pages);
+                    fflush(stderr);
+                }
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+        }
+
+        /* Not in VM range or commit failed — log and propagate */
+        uint32_t guest = vm_base ? (uint32_t)(addr - base) : 0;
+        int is_write = (int)ep->ExceptionRecord->ExceptionInformation[0];
+        fprintf(stderr, "[CRASH-VEH] AV %s guest=0x%08X RIP=%p addr=%p\n",
+                is_write ? "WRITE" : "READ", guest,
+                (void*)ep->ContextRecord->Rip, (void*)addr);
         fflush(stderr);
     }
     return EXCEPTION_CONTINUE_SEARCH;
@@ -340,13 +370,15 @@ int main(int argc, char* argv[])
 #endif
     }
 
-    if (g_abort_redirect) {
+    if (g_abort_redirect == 1) {
         printf("\n[init] CRT abort caught — redirecting to game main (func_000CB9CC)\n");
         /* Reset PPU context for a clean game main entry.
          * Reuse the original stack (which is still committed). */
         ppu_context_init(&ctx);
         ppu_set_stack(&ctx, stack_addr, FLOW_STACK_SIZE);
         printf("[init] Reusing stack: 0x%08X (%u KB)\n", stack_addr, FLOW_STACK_SIZE / 1024);
+        /* Enable demand paging for game main (level 2) */
+        g_abort_redirect = 2;
         ctx.cia = 0x000CB9CC;
         ctx.gpr[2] = 0x008969A8;  /* TOC */
         ctx.gpr[13] = 0x0F007000; /* TLS (from earlier init) */
@@ -355,7 +387,7 @@ int main(int argc, char* argv[])
         vm_write32((uint32_t)ctx.gpr[1], 0);
         vm_write32((uint32_t)ctx.gpr[1] + 4, 0);
 
-        g_abort_redirect = 0;  /* don't redirect again */
+        g_abort_redirect = 99;  /* prevent further redirects */
 #ifdef _WIN32
         __try {
 #endif
