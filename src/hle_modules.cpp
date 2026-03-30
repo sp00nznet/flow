@@ -36,7 +36,7 @@ extern "C" lv2_syscall_table g_lv2_syscalls;
 
 /* ps3recomp HLE headers — only include headers for modules we actually bridge.
  * Headers using C11 _Atomic (cellSync.h) are incompatible with C++ compilation.
- * Stub-only modules (cellSpurs, cellSync, cellNetCtl, sceNp, sys_net) don't
+ * Stub-only modules (cellSpurs, cellSync, sceNp, sys_net) don't
  * need their headers. */
 extern "C" {
 #include "libs/system/cellSysutil.h"
@@ -47,6 +47,7 @@ extern "C" {
 #include "libs/audio/cellAudio.h"
 #include "libs/input/cellPad.h"
 #include "libs/filesystem/cellFs.h"
+#include "libs/network/cellNetCtl.h"
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -149,16 +150,43 @@ extern "C" int g_abort_redirect;
 static int64_t bridge_sys_process_exit(ppu_context* ctx)
 {
     int32_t status = (int32_t)ctx->gpr[3];
-    fprintf(stderr, "[HLE] sys_process_exit(%d)\n", status);
+    fprintf(stderr, "[HLE] sys_process_exit(%d) LR=0x%llX SP=0x%llX r3=0x%llX r4=0x%llX r5=0x%llX\n",
+            status, (unsigned long long)ctx->lr, (unsigned long long)ctx->gpr[1],
+            (unsigned long long)ctx->gpr[3], (unsigned long long)ctx->gpr[4],
+            (unsigned long long)ctx->gpr[5]);
+    /* Dump stack frame for debugging */
+    uint32_t sp = (uint32_t)ctx->gpr[1];
+    fprintf(stderr, "[HLE]   Stack dump at SP=0x%08X:\n", sp);
+    for (int i = 0; i < 16; i++) {
+        uint32_t val = vm_read32(sp + i * 4);
+        fprintf(stderr, "    SP+0x%02X: 0x%08X\n", i * 4, val);
+    }
+    fflush(stderr);
 
-    /* If CRT aborts during startup, longjmp back to main() to redirect
-     * to game main.  This completely escapes the corrupted CRT context. */
-    if (status != 0 && !g_abort_redirect) {
+    /* During CRT or game main, intercept exit and redirect */
+    if (g_abort_redirect == 0) {
+        /* CRT phase: redirect to game main */
         g_abort_redirect = 1;
         fprintf(stderr, "[HLE] CRT abort intercepted — longjmp to main\n");
         fflush(stderr);
         longjmp(g_abort_jmp, 1);
     }
+
+    /* Game main phase: ignore first few exit(1) calls from assertion handler.
+     * The assertions fire on null PhyreEngine pointers but the game may
+     * still be able to proceed past them to reach GCM init. */
+    if (g_abort_redirect >= 2) {
+        static int s_exit_ignored = 0;
+        s_exit_ignored++;
+        if (s_exit_ignored <= 5 && status != 0) {
+            fprintf(stderr, "[HLE] Ignoring sys_process_exit(%d) #%d — continuing\n",
+                    status, s_exit_ignored);
+            fflush(stderr);
+            ctx->gpr[3] = 0;
+            return 0; /* return to caller */
+        }
+    }
+
     exit(status);
     return 0;
 }
@@ -186,19 +214,31 @@ static int64_t bridge_sys_ppu_thread_get_id(ppu_context* ctx)
 
     uint32_t ptr = (uint32_t)ctx->gpr[3];
     if (ptr && vm_base)
-        vm_write64(ptr, 1); /* fake thread ID = 1 */
+        vm_write64(ptr, 0x10000); /* fake thread ID matching PS3 main thread */
     ctx->gpr[3] = 0;
 
-    /* Log first few calls and every 10000th to trace the spin */
-    if (s_call_count <= 5 || s_call_count % 50000 == 0) {
-        fprintf(stderr, "[HLE] sys_ppu_thread_get_id(ptr=0x%X) call #%d SP=0x%08X LR=0x%08X\n",
-                ptr, s_call_count, (uint32_t)ctx->gpr[1], (uint32_t)ctx->lr);
+    /* Force-fix LR if it's been corrupted to a stack address.
+     * The CRT's trampoline chain can corrupt LR between fragments. */
+    if ((ctx->lr >> 28) == 0xD) { /* stack region 0xD0000000+ */
+        ctx->lr = 0x008175FC; /* restore to import stub return */
+    }
+
+    /* Log first few calls, every 200th, and spin detection */
+    if (s_call_count <= 5 || s_call_count % 200 == 0) {
+        fprintf(stderr, "[HLE] sys_ppu_thread_get_id(ptr=0x%X) call #%d SP=0x%08X LR=0x%08X CIA=0x%08X CTR=0x%08X\n",
+                ptr, s_call_count, (uint32_t)ctx->gpr[1], (uint32_t)ctx->lr,
+                (uint32_t)ctx->cia, (uint32_t)ctx->ctr);
         fflush(stderr);
     }
 
     /* Detect infinite spin loop during CRT init (before game main).
      * Only trigger once. */
-    if (s_call_count > 500 && g_abort_redirect == 0) {
+    if (s_call_count > 500 && s_call_count < 510 && g_abort_redirect == 0) {
+        /* Log some calls around the spin threshold */
+        fprintf(stderr, "[HLE] sys_ppu_thread_get_id(ptr=0x%X) call #%d SP=0x%08X LR=0x%08X\n",
+                ptr, s_call_count, (uint32_t)ctx->gpr[1], (uint32_t)ctx->lr);
+    }
+    if (s_call_count > 1000 && g_abort_redirect == 0) {
         fprintf(stderr, "[HLE] thread_get_id spin detected (%d calls) — triggering abort redirect\n",
                 s_call_count);
         fflush(stderr);
@@ -218,17 +258,25 @@ static int64_t bridge_sys_lwmutex_create(ppu_context* ctx)
     fprintf(stderr, "[HLE] sys_lwmutex_create(mutex=0x%x, attr=0x%x)\n",
             mutex_addr, attr_addr);
 
-    if (!mutex_addr || !attr_addr || mutex_addr > 0x20000000 || attr_addr > 0x20000000) {
-        fprintf(stderr, "[HLE]   ERROR: invalid address\n");
-        ctx->gpr[3] = 0;
+    if (!mutex_addr || mutex_addr > 0x20000000) {
+        fprintf(stderr, "[HLE]   ERROR: invalid mutex address\n");
+        ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x80010002; /* CELL_EFAULT */
         return 0;
     }
 
-    /* Read attribute from guest memory */
+    /* Read attribute from guest memory, or use defaults if attr is NULL */
     sys_lwmutex_attribute_t attr;
-    attr.protocol  = vm_read32(attr_addr);
-    attr.recursive = vm_read32(attr_addr + 4);
-    memcpy(attr.name, guest_ptr(attr_addr + 8), 8);
+    if (attr_addr && attr_addr < 0x20000000) {
+        attr.protocol  = vm_read32(attr_addr);
+        attr.recursive = vm_read32(attr_addr + 4);
+        memcpy(attr.name, guest_ptr(attr_addr + 8), 8);
+    } else {
+        /* Default attributes: priority protocol, recursive */
+        attr.protocol  = 2; /* SYS_SYNC_PRIORITY */
+        attr.recursive = 0x10; /* SYS_SYNC_RECURSIVE */
+        memset(attr.name, 0, 8);
+        fprintf(stderr, "[HLE]   Using default attributes (attr ptr=0x%X)\n", attr_addr);
+    }
 
     fprintf(stderr, "[HLE]   proto=%u, recur=%u, name=%.8s\n",
             attr.protocol, attr.recursive, attr.name);
@@ -255,8 +303,21 @@ static int64_t bridge_sys_lwmutex_create(ppu_context* ctx)
 /* sys_lwmutex_lock(lwmutex_ptr, timeout) — REAL */
 static int64_t bridge_sys_lwmutex_lock(ppu_context* ctx)
 {
+    static int s_lock_count = 0;
+    static uint32_t s_last_mutex = 0;
+    static int s_repeat = 0;
+    s_lock_count++;
+
     uint32_t mutex_addr = (uint32_t)ctx->gpr[3];
     uint64_t timeout    = ctx->gpr[4];
+
+    /* Spin detection: same mutex locked repeatedly without other HLE calls */
+    if (mutex_addr == s_last_mutex) {
+        s_repeat++;
+    } else {
+        s_repeat = 0;
+        s_last_mutex = mutex_addr;
+    }
 
     /* Read the lock_var to identify which host mutex to use */
     sys_lwmutex_t_hle mutex_hle;
@@ -268,16 +329,23 @@ static int64_t bridge_sys_lwmutex_lock(ppu_context* ctx)
 
     s32 rc = sys_lwmutex_lock(&mutex_hle, timeout);
 
-    /* Write back updated state */
+    /* Write back updated state.
+     * Set owner thread ID (1) in upper 32 bits of lock_var so the
+     * Dinkumware CRT's __Mtx_lock sees the correct owner and doesn't spin. */
+    if (rc == 0) {
+        mutex_hle.lock_var = ((uint64_t)0x10000 << 32) | (mutex_hle.lock_var & 0xFFFFFFFF);
+    }
     vm_write64(mutex_addr,      mutex_hle.lock_var);
     vm_write32(mutex_addr + 12, mutex_hle.recursive_count);
 
-    /* Debug: log state */
-    static int s_lock_log = 0;
-    if (s_lock_log < 5) {
-        fprintf(stderr, "[HLE] lock return: SP=0x%08X LR=0x%llX\n",
-                (uint32_t)ctx->gpr[1], (unsigned long long)ctx->lr);
-        s_lock_log++;
+    /* Debug: log first 10 and every 200th, plus spin detection */
+    if (s_lock_count <= 10 || s_lock_count % 200 == 0 || s_repeat == 50) {
+        fprintf(stderr, "[HLE] lwmutex_lock(0x%08X) #%d rc=%d lock_var=0x%llX recur=%u SP=0x%08X LR=0x%08X repeat=%d\n",
+                mutex_addr, s_lock_count, rc,
+                (unsigned long long)mutex_hle.lock_var,
+                mutex_hle.recursive_count,
+                (uint32_t)ctx->gpr[1], (uint32_t)ctx->lr, s_repeat);
+        fflush(stderr);
     }
 
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
@@ -319,15 +387,22 @@ static int64_t bridge_sys_lwmutex_unlock(ppu_context* ctx)
 
     s32 rc = sys_lwmutex_unlock(&mutex_hle);
 
+    /* Clear owner on unlock (set upper 32 bits to 0xFFFFFFFF = no owner) */
+    if (rc == 0 && mutex_hle.recursive_count == 0) {
+        mutex_hle.lock_var = (0xFFFFFFFFULL << 32) | (mutex_hle.lock_var & 0xFFFFFFFF);
+    }
     vm_write64(mutex_addr,      mutex_hle.lock_var);
     vm_write32(mutex_addr + 12, mutex_hle.recursive_count);
 
-    /* Debug: log state after unlock to trace crash */
-    static int s_unlock_log = 0;
-    if (s_unlock_log < 5) {
-        fprintf(stderr, "[HLE] unlock return: SP=0x%08X LR=0x%llX r3=%d\n",
-                (uint32_t)ctx->gpr[1], (unsigned long long)ctx->lr, (int)rc);
-        s_unlock_log++;
+    /* Debug: log state after unlock */
+    static int s_unlock_count = 0;
+    s_unlock_count++;
+    if (s_unlock_count <= 10 || s_unlock_count % 200 == 0) {
+        fprintf(stderr, "[HLE] lwmutex_unlock(0x%08X) #%d rc=%d lock_var=0x%llX recur=%u\n",
+                mutex_addr, s_unlock_count, (int)rc,
+                (unsigned long long)mutex_hle.lock_var,
+                mutex_hle.recursive_count);
+        fflush(stderr);
     }
 
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
@@ -402,7 +477,8 @@ static int64_t bridge_cellSysutilRegisterCallback(ppu_context* ctx)
     uint32_t func    = (uint32_t)ctx->gpr[4];
     uint32_t userdata = (uint32_t)ctx->gpr[5];
 
-    fprintf(stderr, "[HLE] cellSysutilRegisterCallback(slot=%d, func=0x%x)\n", slot, func);
+    fprintf(stderr, "[HLE] cellSysutilRegisterCallback(slot=%d, func=0x%x, TOC=0x%llX)\n",
+            slot, func, (unsigned long long)ctx->gpr[2]);
 
     /* Call real implementation with cast pointers (it just stores them) */
     s32 rc = cellSysutilRegisterCallback(slot, (CellSysutilCallback)(uintptr_t)func,
@@ -582,8 +658,11 @@ static const char* get_module_name(uint32_t id) {
 static int64_t bridge_cellSysmoduleLoadModule(ppu_context* ctx)
 {
     uint32_t id = (uint32_t)ctx->gpr[3];
-    fprintf(stderr, "[HLE] cellSysmoduleLoadModule(%u = %s)\n", id, get_module_name(id));
+    fprintf(stderr, "[HLE] cellSysmoduleLoadModule(0x%X = %s) TOC=0x%llX\n", id, get_module_name(id),
+            (unsigned long long)ctx->gpr[2]);
     s32 rc = cellSysmoduleLoadModule(id);
+    fprintf(stderr, "[cellSysmodule] LoadModule(id=0x%04X '%s') -> 0x%X\n",
+            id, get_module_name(id), (uint32_t)rc);
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
     return rc;
 }
@@ -1365,18 +1444,133 @@ static void register_cellSync(void)
 }
 
 /* ---------------------------------------------------------------------------
- * cellNetCtl (stubs — network init not critical for boot)
+ * cellNetCtl — real bridges to ps3recomp implementation
  * -----------------------------------------------------------------------*/
+
+/* cellNetCtlInit() — no args */
+static int64_t bridge_cellNetCtlInit(ppu_context* ctx)
+{
+    (void)ctx;
+    int32_t rc = cellNetCtlInit();
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return 0;
+}
+
+/* cellNetCtlTerm() — no args */
+static int64_t bridge_cellNetCtlTerm(ppu_context* ctx)
+{
+    (void)ctx;
+    int32_t rc = cellNetCtlTerm();
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return 0;
+}
+
+/* cellNetCtlGetState(s32* state) — r3 = guest ptr to s32 */
+static int64_t bridge_cellNetCtlGetState(ppu_context* ctx)
+{
+    uint32_t state_addr = (uint32_t)ctx->gpr[3];
+    int32_t state = 0;
+    int32_t rc = cellNetCtlGetState(&state);
+    if (rc == 0 && state_addr) {
+        /* Write state as big-endian s32 to guest memory */
+        vm_write32(state_addr, (uint32_t)state);
+    }
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return 0;
+}
+
+/* cellNetCtlGetInfo(s32 code, CellNetCtlInfo* info) — r3=code, r4=guest ptr */
+static int64_t bridge_cellNetCtlGetInfo(ppu_context* ctx)
+{
+    int32_t code = (int32_t)ctx->gpr[3];
+    uint32_t info_addr = (uint32_t)ctx->gpr[4];
+    CellNetCtlInfo info;
+    int32_t rc = cellNetCtlGetInfo(code, &info);
+    if (rc == 0 && info_addr) {
+        /* Write the info union to guest memory.
+         * For u32 fields, byte-swap.  For string/byte fields, copy raw. */
+        switch (code) {
+        case CELL_NET_CTL_INFO_DEVICE:
+        case CELL_NET_CTL_INFO_MTU:
+        case CELL_NET_CTL_INFO_LINK:
+        case CELL_NET_CTL_INFO_LINK_TYPE:
+        case CELL_NET_CTL_INFO_WLAN_SECURITY:
+        case CELL_NET_CTL_INFO_8021X_TYPE:
+        case CELL_NET_CTL_INFO_IP_CONFIG:
+        case CELL_NET_CTL_INFO_HTTP_PROXY_CONFIG:
+        case CELL_NET_CTL_INFO_UPNP_CONFIG:
+            vm_write32(info_addr, info.device);
+            break;
+        case CELL_NET_CTL_INFO_HTTP_PROXY_PORT:
+            vm_write16(info_addr, info.http_proxy_port);
+            break;
+        case CELL_NET_CTL_INFO_ETHER_ADDR:
+        case CELL_NET_CTL_INFO_BSSID:
+            /* 6 bytes MAC + 2 padding — raw copy */
+            for (int i = 0; i < 8; i++)
+                vm_write8(info_addr + i, info.ether_addr.data[i]);
+            break;
+        default:
+            /* String/byte fields: raw memcpy (already in byte order) */
+            for (size_t i = 0; i < sizeof(CellNetCtlInfo); i++)
+                vm_write8(info_addr + i, ((uint8_t*)&info)[i]);
+            break;
+        }
+    }
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return 0;
+}
+
+/* cellNetCtlGetNatInfo(CellNetCtlNatInfo* natInfo) — r3=guest ptr */
+static int64_t bridge_cellNetCtlGetNatInfo(ppu_context* ctx)
+{
+    uint32_t nat_addr = (uint32_t)ctx->gpr[3];
+    CellNetCtlNatInfo natInfo;
+    int32_t rc = cellNetCtlGetNatInfo(&natInfo);
+    if (rc == 0 && nat_addr) {
+        vm_write32(nat_addr + 0, natInfo.size);
+        vm_write32(nat_addr + 4, natInfo.nat_type);
+        vm_write32(nat_addr + 8, natInfo.stun_status);
+        vm_write32(nat_addr + 12, natInfo.upnp_status);
+    }
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return 0;
+}
+
+/* cellNetCtlAddHandler(handler, arg, s32* hid) — r3=func, r4=arg, r5=guest ptr */
+static int64_t bridge_cellNetCtlAddHandler(ppu_context* ctx)
+{
+    /* We don't actually call back into guest code, just register and succeed */
+    uint32_t hid_addr = (uint32_t)ctx->gpr[5];
+    int32_t hid = 0;
+    int32_t rc = cellNetCtlAddHandler(NULL, NULL, &hid);
+    if (rc == 0 && hid_addr)
+        vm_write32(hid_addr, (uint32_t)hid);
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return 0;
+}
+
+/* cellNetCtlDelHandler(s32 hid) — r3=hid */
+static int64_t bridge_cellNetCtlDelHandler(ppu_context* ctx)
+{
+    int32_t hid = (int32_t)ctx->gpr[3];
+    int32_t rc = cellNetCtlDelHandler(hid);
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return 0;
+}
+
 static void register_cellNetCtl(void)
 {
     ps3_module_init(&mod_cellNetCtl, "cellNetCtl");
-    const char* funcs[] = {
-        "cellNetCtlNetStartDialogLoadAsync",
-        "cellNetCtlNetStartDialogUnloadAsync",
-        "cellNetCtlTerm", "cellNetCtlGetInfo", "cellNetCtlInit",
-    };
-    for (auto name : funcs)
-        reg_func(&mod_cellNetCtl, name, (void*)hle_stub);
+    reg_func(&mod_cellNetCtl, "cellNetCtlInit",       (void*)bridge_cellNetCtlInit);
+    reg_func(&mod_cellNetCtl, "cellNetCtlTerm",       (void*)bridge_cellNetCtlTerm);
+    reg_func(&mod_cellNetCtl, "cellNetCtlGetState",   (void*)bridge_cellNetCtlGetState);
+    reg_func(&mod_cellNetCtl, "cellNetCtlGetInfo",    (void*)bridge_cellNetCtlGetInfo);
+    reg_func(&mod_cellNetCtl, "cellNetCtlGetNatInfo", (void*)bridge_cellNetCtlGetNatInfo);
+    reg_func(&mod_cellNetCtl, "cellNetCtlAddHandler", (void*)bridge_cellNetCtlAddHandler);
+    reg_func(&mod_cellNetCtl, "cellNetCtlDelHandler", (void*)bridge_cellNetCtlDelHandler);
+    reg_func(&mod_cellNetCtl, "cellNetCtlNetStartDialogLoadAsync",   (void*)hle_stub);
+    reg_func(&mod_cellNetCtl, "cellNetCtlNetStartDialogUnloadAsync", (void*)hle_stub);
     mod_cellNetCtl.loaded = true;
     ps3_register_module(&mod_cellNetCtl);
 }
@@ -1473,6 +1667,57 @@ static void register_sys_fs(void)
     ps3_register_module(&mod_sys_fs);
 }
 
+/* exitspawn: PS3 replaces the process with a new one.
+ * In recomp, we treat this as "restart game main". */
+extern jmp_buf g_abort_jmp;
+extern int g_abort_redirect;
+
+static int s_exitspawn_count = 0;
+
+static int64_t bridge_exitspawn(ppu_context* ctx)
+{
+    s_exitspawn_count++;
+    uint32_t path_addr = (uint32_t)ctx->gpr[3];
+    char path[256] = {};
+    if (path_addr) {
+        for (int i = 0; i < 255; i++) {
+            uint8_t c = vm_read8(path_addr + i);
+            path[i] = (char)c;
+            if (!c) break;
+        }
+    }
+    fprintf(stderr, "\n[HLE] sys_prx_exitspawn_with_level (call #%d)\n", s_exitspawn_count);
+    fprintf(stderr, "[HLE]   path='%s'\n", path);
+
+    /* Read argv[0] if available */
+    uint32_t argv_addr = (uint32_t)ctx->gpr[4];
+    if (argv_addr) {
+        uint32_t arg0_ptr = vm_read32(argv_addr);
+        if (arg0_ptr) {
+            char arg0[128] = {};
+            for (int i = 0; i < 127; i++) {
+                uint8_t c = vm_read8(arg0_ptr + i);
+                arg0[i] = (char)c;
+                if (!c) break;
+            }
+            fprintf(stderr, "[HLE]   argv[0]='%s'\n", arg0);
+        }
+    }
+
+    fprintf(stderr, "[HLE]   Treating as game restart — longjmp to main\n\n");
+    fflush(stderr);
+
+    /* Re-trigger the CRT abort redirect mechanism to re-enter game main.
+     * Cap at 3 restarts to prevent infinite loops. */
+    if (s_exitspawn_count >= 3) {
+        fprintf(stderr, "[HLE]   Too many exitspawns, halting\n");
+        exit(0);
+    }
+    g_abort_redirect = 1;
+    longjmp(g_abort_jmp, 1);
+    return 0; /* unreachable */
+}
+
 /* ---------------------------------------------------------------------------
  * sysPrxForUser — core PRX runtime (REAL bridges for critical functions)
  * -----------------------------------------------------------------------*/
@@ -1497,9 +1742,9 @@ static void register_sysPrxForUser(void)
 
     /* Remaining stubs */
     reg_func(&mod_sysPrxForUser, "sys_process_is_stack",              (void*)hle_stub); /* returns 0 = not stack */
-    reg_func(&mod_sysPrxForUser, "sys_prx_exitspawn_with_level",     (void*)hle_stub);
+    reg_func(&mod_sysPrxForUser, "sys_prx_exitspawn_with_level",     (void*)bridge_exitspawn);
     reg_func(&mod_sysPrxForUser, "sys_spu_image_import",             (void*)hle_stub);
-    reg_func(&mod_sysPrxForUser, "sys_game_process_exitspawn",       (void*)hle_stub);
+    reg_func(&mod_sysPrxForUser, "sys_game_process_exitspawn",       (void*)bridge_exitspawn);
 
     mod_sysPrxForUser.loaded = true;
     ps3_register_module(&mod_sysPrxForUser);

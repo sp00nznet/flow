@@ -13,6 +13,7 @@
 #include "recomp/ppu_recomp.h"
 #include <cstdio>
 #include <cstring>
+#include <csetjmp>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -21,6 +22,7 @@
 struct RecompiledFunc {
     uint32_t    guest_addr;
     void      (*host_func)(void* ctx);
+    const char* name;
 };
 
 extern "C" const RecompiledFunc g_recompiled_funcs[];
@@ -30,7 +32,7 @@ extern "C" const size_t g_recompiled_func_count;
  * Hash table for fast guest→host dispatch
  * -----------------------------------------------------------------------*/
 
-#define DISPATCH_TABLE_SIZE  (1 << 17)  /* 128K entries — ~512KB */
+#define DISPATCH_TABLE_SIZE  (1 << 18)  /* 256K entries — ~2MB, <50% load for 101K funcs */
 #define DISPATCH_HASH_MASK   (DISPATCH_TABLE_SIZE - 1)
 
 typedef struct {
@@ -80,12 +82,22 @@ static void dispatch_register(uint32_t addr, void (*func)(void*))
     uint32_t h = hash_addr(addr) & DISPATCH_HASH_MASK;
     for (uint32_t j = 0; j < DISPATCH_TABLE_SIZE; j++) {
         uint32_t idx = (h + j) & DISPATCH_HASH_MASK;
-        if (s_dispatch[idx].guest_addr == 0) {
-            s_dispatch[idx].guest_addr = addr;
+        if (s_dispatch[idx].guest_addr == addr) {
+            /* Overwrite existing entry */
+            fprintf(stderr, "[dispatch] Overwriting 0x%08X at slot %u (old=%p new=%p)\n",
+                    addr, idx, (void*)s_dispatch[idx].host_func, (void*)func);
             s_dispatch[idx].host_func = func;
             return;
         }
+        if (s_dispatch[idx].guest_addr == 0) {
+            s_dispatch[idx].guest_addr = addr;
+            s_dispatch[idx].host_func = func;
+            fprintf(stderr, "[dispatch] Registered 0x%08X at slot %u (func=%p)\n",
+                    addr, idx, (void*)func);
+            return;
+        }
     }
+    fprintf(stderr, "[dispatch] FAILED to register 0x%08X — table full!\n", addr);
 }
 
 static void dispatch_init(void)
@@ -110,8 +122,44 @@ static void dispatch_init(void)
         }
     }
 
+    /* Intercept printf (0x006BF0D0) to log caller info */
+    dispatch_register(0x006BF0D0, [](void* p) {
+        ppu_context* ctx = (ppu_context*)p;
+        fprintf(stderr, "[PRINTF-INTERCEPT] LR=0x%08X SP=0x%08X\n",
+                (uint32_t)ctx->lr, (uint32_t)ctx->gpr[1]);
+        fflush(stderr);
+
+        extern void func_006BF0D0(ppu_context*);
+        func_006BF0D0(ctx);
+    });
+
     /* Register manual stubs for mid-function entry points */
     dispatch_register(0x00100B64, stub_00100B64);
+    /* Mid-function printf entry � needed for PhyreEngine error messages */
+    dispatch_register(0x006BF0D0, (void(*)(void*))func_006BF0D0);
+    dispatch_register(0x006BF410, (void(*)(void*))func_006BF410);
+    /* Intercept vsnprintf (0x006BCD28) to dump the format string for
+     * PhyreEngine assertion messages. Read format from r5 (guest ptr). */
+    dispatch_register(0x006BCD28, [](void* p) {
+        ppu_context* ctx = (ppu_context*)p;
+        extern uint8_t vm_read8(uint64_t addr);
+        uint32_t fmt_addr = (uint32_t)ctx->gpr[5];
+        char fmt[512] = {};
+        if (fmt_addr) {
+            for (int i = 0; i < 511; i++) {
+                fmt[i] = (char)vm_read8(fmt_addr + i);
+                if (!fmt[i]) break;
+            }
+        }
+        static int s_call = 0;
+        s_call++;
+        fprintf(stderr, "[vsnprintf #%d] fmt_addr=0x%08X fmt='%.200s' r6=0x%llX r7=0x%llX\n",
+                s_call, fmt_addr, fmt,
+                (unsigned long long)ctx->gpr[6],
+                (unsigned long long)ctx->gpr[7]);
+        fflush(stderr);
+        ctx->gpr[3] = 0;
+    });
 
     s_dispatch_initialized = 1;
     fprintf(stderr, "[dispatch] Initialized with %zu functions + manual stubs\n",
@@ -121,7 +169,7 @@ static void dispatch_init(void)
 static void (*dispatch_lookup(uint32_t guest_addr))(void*)
 {
     uint32_t h = hash_addr(guest_addr) & DISPATCH_HASH_MASK;
-    for (uint32_t j = 0; j < 64; j++) { /* max 64 probes */
+    for (uint32_t j = 0; j < 256; j++) { /* max 256 probes */
         uint32_t idx = (h + j) & DISPATCH_HASH_MASK;
         if (s_dispatch[idx].guest_addr == guest_addr)
             return s_dispatch[idx].host_func;
@@ -171,8 +219,10 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
 
             func = dispatch_lookup(opd_func);
             if (func) {
-                /* Update TOC to the OPD's TOC value */
-                ctx->gpr[2] = opd_toc;
+                /* Update TOC to the OPD's TOC value.
+                 * Don't overwrite with 0 — preserve caller's TOC. */
+                if (opd_toc != 0)
+                    ctx->gpr[2] = opd_toc;
                 target = opd_func;
             }
         }
@@ -195,6 +245,31 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
                     target, s_call_count, (uint32_t)ctx->gpr[1], (void*)func);
             fflush(stderr);
             s_log_count++;
+        }
+        /* Log caller info for printf calls — dump the assertion struct */
+        if (target == 0x006BF0D0) {
+            extern uint32_t vm_read32(uint64_t addr);
+            extern uint8_t vm_read8(uint64_t addr);
+            uint32_t struct_addr = (uint32_t)ctx->gpr[4];
+            fprintf(stderr, "[dispatch-printf] LR=0x%08X r3=0x%08X r4=0x%08X\n",
+                    (uint32_t)ctx->lr, (uint32_t)ctx->gpr[3], struct_addr);
+            /* Dump struct contents */
+            for (int i = 0; i < 8; i++) {
+                fprintf(stderr, "  [%+02d] = 0x%08X\n", i*4, vm_read32(struct_addr + i*4));
+            }
+            /* Read string at offset 0 (file path) and offset 8 (message) */
+            uint32_t file_ptr = vm_read32(struct_addr);
+            uint32_t msg_ptr  = vm_read32(struct_addr + 0x8);
+            char file_str[128] = {}; char msg_str[128] = {};
+            if (file_ptr && file_ptr < 0x20000000) {
+                for (int i = 0; i < 127; i++) { file_str[i] = vm_read8(file_ptr + i); if (!file_str[i]) break; }
+            }
+            if (msg_ptr && msg_ptr < 0x20000000) {
+                for (int i = 0; i < 127; i++) { msg_str[i] = vm_read8(msg_ptr + i); if (!msg_str[i]) break; }
+            }
+            fprintf(stderr, "  file_ptr=0x%08X -> '%s'\n  msg_ptr=0x%08X -> '%s'\n",
+                    file_ptr, file_str, msg_ptr, msg_str);
+            fflush(stderr);
         }
 
         /* Guest SP guard: detect guest stack overflow early */
@@ -266,8 +341,8 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
                         (unsigned long long)ctx->gpr[2]);
                 fflush(stderr);
             }
-            /* Always restore TOC */
-            ctx->gpr[2] = saved_toc;
+            /* Always restore TOC to game's known value (single-module) */
+            ctx->gpr[2] = 0x008969A8;
             /* Restore SP if it was corrupted (sign extension) */
             if ((ctx->gpr[1] >> 32) != 0 && (ctx->gpr[1] >> 32) != 0xFFFFFFFF)
                 ctx->gpr[1] = saved_sp;
@@ -283,7 +358,28 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
                     target, ctx->cia, (uint32_t)ctx->lr, (uint32_t)ctx->gpr[1]);
             s_miss_count++;
         }
-        /* Return gracefully — the calling code may check for errors */
+        ctx->gpr[3] = (uint64_t)(int64_t)(-1);
+
+        /* Detect spin on unresolvable targets (CRT stuck in constructor
+         * table with garbage function pointers).  After enough misses to
+         * the same address, trigger the CRT abort redirect. */
+        static uint32_t s_last_miss = 0;
+        static int s_repeat_count = 0;
+        if (target == s_last_miss) {
+            s_repeat_count++;
+            if (s_repeat_count > 5) {
+                extern jmp_buf g_abort_jmp;
+                extern int g_abort_redirect;
+                if (g_abort_redirect == 0) {
+                    fprintf(stderr, "[dispatch] Spin detected on bctrl -> 0x%08X, aborting CRT\n", target);
+                    g_abort_redirect = 1;
+                    longjmp(g_abort_jmp, 1);
+                }
+            }
+        } else {
+            s_last_miss = target;
+            s_repeat_count = 0;
+        }
     }
 }
 
@@ -343,7 +439,8 @@ extern "C" void ps3_thread_entry(ppu_context* ctx)
             uint32_t opd_toc  = vm_read32(entry + 4);
             func = dispatch_lookup(opd_func);
             if (func) {
-                ctx->gpr[2] = opd_toc;
+                if (opd_toc != 0)
+                    ctx->gpr[2] = opd_toc;
                 entry = opd_func;
             }
         }
