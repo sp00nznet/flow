@@ -88,13 +88,13 @@ static void reg_func(ps3_module* m, const char* name, void* handler)
 
 /* Stub handler for not-yet-bridged functions — returns CELL_OK (0). */
 static int64_t hle_stub(ppu_context* ctx) {
-    (void)ctx;
+    ctx->gpr[3] = 0;  /* CELL_OK in guest r3 */
     return 0;
 }
 
 /* Verbose stub that logs the call (used for functions we want to track) */
 static int64_t hle_stub_verbose(ppu_context* ctx) {
-    (void)ctx;
+    ctx->gpr[3] = 0;
     return 0;
 }
 
@@ -231,19 +231,27 @@ static int64_t bridge_sys_ppu_thread_get_id(ppu_context* ctx)
         fflush(stderr);
     }
 
-    /* Detect infinite spin loop during CRT init (before game main).
-     * Only trigger once. */
-    if (s_call_count > 500 && s_call_count < 510 && g_abort_redirect == 0) {
-        /* Log some calls around the spin threshold */
-        fprintf(stderr, "[HLE] sys_ppu_thread_get_id(ptr=0x%X) call #%d SP=0x%08X LR=0x%08X\n",
-                ptr, s_call_count, (uint32_t)ctx->gpr[1], (uint32_t)ctx->lr);
-    }
-    if (s_call_count > 1000 && g_abort_redirect == 0) {
-        fprintf(stderr, "[HLE] thread_get_id spin detected (%d calls) — triggering abort redirect\n",
-                s_call_count);
-        fflush(stderr);
-        g_abort_redirect = 1;
-        longjmp(g_abort_jmp, 1);
+    /* Detect true infinite spin: same SP+LR for consecutive calls.
+     * The CRT spins waiting for a system thread variable that never gets set. */
+    {
+        static uint32_t s_last_sp = 0, s_last_lr = 0;
+        static int s_same_count = 0;
+        uint32_t sp = (uint32_t)ctx->gpr[1];
+        uint32_t lr = (uint32_t)ctx->lr;
+        if (sp == s_last_sp && lr == s_last_lr) {
+            s_same_count++;
+            if (s_same_count > 2000 && g_abort_redirect == 0) {
+                fprintf(stderr, "[HLE] thread_get_id spin detected (%d identical calls SP=0x%08X LR=0x%08X)\n",
+                        s_same_count, sp, lr);
+                fflush(stderr);
+                g_abort_redirect = 1;
+                longjmp(g_abort_jmp, 1);
+            }
+        } else {
+            s_last_sp = sp;
+            s_last_lr = lr;
+            s_same_count = 0;
+        }
     }
 
     return 0;
@@ -259,7 +267,7 @@ static int64_t bridge_sys_lwmutex_create(ppu_context* ctx)
             mutex_addr, attr_addr);
 
     if (!mutex_addr || mutex_addr > 0x20000000) {
-        fprintf(stderr, "[HLE]   ERROR: invalid mutex address\n");
+        fprintf(stderr, "[HLE]   ERROR: invalid mutex address 0x%08X\n", mutex_addr);
         ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x80010002; /* CELL_EFAULT */
         return 0;
     }
@@ -1392,20 +1400,55 @@ static void register_cellSysmodule(void)
 /* ---------------------------------------------------------------------------
  * cellSpurs — SPU task management (stubs for now; SPU execution is N/A)
  * -----------------------------------------------------------------------*/
+/* cellSpursInitialize(CellSpurs *spurs, int nSpus, int spuPriority,
+ *                     int ppuPriority, bool exitIfNoWork)
+ * r3 = pointer to CellSpurs object (2048 bytes, 128-aligned)
+ * r4 = nSpus, r5 = spuPriority, r6 = ppuPriority, r7 = exitIfNoWork */
+static int64_t hle_cellSpursInitialize(ppu_context* ctx) {
+    uint32_t spurs_addr = (uint32_t)ctx->gpr[3];
+    uint32_t nSpus = (uint32_t)ctx->gpr[4];
+    fprintf(stderr, "[cellSpurs] Initialize(spurs=0x%08X, nSpus=%u, spuPrio=%u, ppuPrio=%u)\n",
+            spurs_addr, nSpus, (uint32_t)ctx->gpr[5], (uint32_t)ctx->gpr[6]);
+    /* Zero the SPURS structure (2048 bytes = 0x800) so the game
+     * doesn't read garbage when checking SPURS state. */
+    if (spurs_addr && spurs_addr < 0xF0000000) {
+        extern uint8_t* vm_base;
+        memset(vm_base + spurs_addr, 0, 0x800);
+        /* Mark as initialized (offset 0x0 = magic/state) */
+        vm_write32(spurs_addr, 1);
+    }
+    ctx->gpr[3] = 0;  /* CELL_OK */
+    return 0;
+}
+
+/* cellSpursAddWorkload — r3=spurs, r4=workloadId_ptr, ... */
+static int64_t hle_cellSpursAddWorkload(ppu_context* ctx) {
+    uint32_t id_ptr = (uint32_t)ctx->gpr[4];
+    static uint32_t s_next_wl = 1;
+    fprintf(stderr, "[cellSpurs] AddWorkload(spurs=0x%08X, id_ptr=0x%08X) -> wl=%u\n",
+            (uint32_t)ctx->gpr[3], id_ptr, s_next_wl);
+    if (id_ptr && id_ptr < 0xF0000000)
+        vm_write32(id_ptr, s_next_wl++);
+    ctx->gpr[3] = 0;
+    return 0;
+}
+
 static void register_cellSpurs(void)
 {
     ps3_module_init(&mod_cellSpurs, "cellSpurs");
     const char* funcs[] = {
         "cellSpursDetachLv2EventQueue", "cellSpursRemoveWorkload",
-        "cellSpursWaitForWorkloadShutdown", "cellSpursAddWorkload",
+        "cellSpursWaitForWorkloadShutdown",
         "cellSpursWakeUp", "cellSpursShutdownWorkload",
-        "cellSpursInitialize", "cellSpursAttachLv2EventQueue",
+        "cellSpursAttachLv2EventQueue",
         "cellSpursFinalize", "cellSpursReadyCountStore",
         "cellSpursRequestIdleSpu", "cellSpursGetInfo",
         "cellSpursSetPriorities", "cellSpursSetExceptionEventHandler",
     };
     for (auto name : funcs)
         reg_func(&mod_cellSpurs, name, (void*)hle_stub);
+    reg_func(&mod_cellSpurs, "cellSpursInitialize", (void*)hle_cellSpursInitialize);
+    reg_func(&mod_cellSpurs, "cellSpursAddWorkload", (void*)hle_cellSpursAddWorkload);
     mod_cellSpurs.loaded = true;
     ps3_register_module(&mod_cellSpurs);
 }
@@ -1704,18 +1747,13 @@ static int64_t bridge_exitspawn(ppu_context* ctx)
         }
     }
 
-    fprintf(stderr, "[HLE]   Treating as game restart — longjmp to main\n\n");
+    fprintf(stderr, "[HLE]   Ignoring exitspawn — returning to caller\n\n");
     fflush(stderr);
 
-    /* Re-trigger the CRT abort redirect mechanism to re-enter game main.
-     * Cap at 3 restarts to prevent infinite loops. */
-    if (s_exitspawn_count >= 3) {
-        fprintf(stderr, "[HLE]   Too many exitspawns, halting\n");
-        exit(0);
-    }
-    g_abort_redirect = 1;
-    longjmp(g_abort_jmp, 1);
-    return 0; /* unreachable */
+    /* Don't restart: just return CELL_OK so the caller continues.
+     * The game may have fallback code after the exitspawn call. */
+    ctx->gpr[3] = 0;
+    return 0;
 }
 
 /* ---------------------------------------------------------------------------

@@ -51,6 +51,7 @@ extern "C" char g_sys_fs_root[512];
 extern "C" void sys_lwmutex_reset_all(void);
 extern "C" void hle_guest_malloc_reset(void);
 extern "C" void run_elf_constructors(ppu_context* ctx);
+extern "C" void run_remaining_constructors(ppu_context* ctx);
 
 /* ---------------------------------------------------------------------------
  * Forward declarations for recompiled code (from stubs.cpp or generated)
@@ -420,58 +421,48 @@ int main(int argc, char* argv[])
 
     if (g_abort_redirect == 1) {
         printf("\n[init] CRT abort caught — redirecting to game main (func_000CB9CC)\n");
-        /* Reset PPU context and OS state for a clean game main entry.
-         * CRT abort may have left mutexes locked, heap partially used,
-         * and GOT/data segments corrupted by partial CRT initialization. */
+        /* CRT spin aborted — the CRT partially initialized before spinning.
+         * Strategy: Keep CRT's state (BSS globals, TLS, heap allocations)
+         * since constructors already ran and initialized essential data.
+         * Only clean the stack (has 0x74 fill from spin loop frames)
+         * and reset register context for game main entry. */
+        /* Reset and reload ELF to get clean data/BSS state */
         sys_lwmutex_reset_all();
         hle_guest_malloc_reset();
-        /* Reload ELF data segments to restore GOT and .data to original state */
         elf_load_segments(elf_path);
-        printf("[init] Reloaded ELF data segments\n");
+        fprintf(stderr, "[init] Reloaded ELF data segments\n");
+        fflush(stderr);
+        memset(vm_base + stack_addr, 0, FLOW_STACK_SIZE);
         ppu_context_init(&ctx);
         ppu_set_stack(&ctx, stack_addr, FLOW_STACK_SIZE);
-        printf("[init] Reusing stack: 0x%08X (%u KB)\n", stack_addr, FLOW_STACK_SIZE / 1024);
-        /* Enable demand paging for game main (level 2) */
         g_abort_redirect = 2;
         ctx.cia = 0x000CB9CC;
         ctx.gpr[2] = 0x008969A8;  /* TOC */
-        ctx.gpr[13] = 0x0F007000; /* TLS (from earlier init) */
+        ctx.gpr[13] = 0x0F007000; /* TLS */
         ctx.lr = 0x008175FC;       /* sys_process_exit stub */
-        /* Zero the entire stack region to clear CRT corruption (0x74 pattern).
-         * The stack spans from stack_addr to stack_addr + FLOW_STACK_SIZE. */
-        memset(vm_base + stack_addr, 0, FLOW_STACK_SIZE);
-        printf("[init] Cleared stack region: 0x%08X - 0x%08X\n",
-               stack_addr, stack_addr + FLOW_STACK_SIZE);
-
-        /* Write TOC to SP+0x28 (PPC64 ABI: TOC save area in stack frame). */
         {
             uint64_t toc_be = _byteswap_uint64(ctx.gpr[2]);
             memcpy(vm_base + (uint32_t)ctx.gpr[1] + 0x28, &toc_be, 8);
         }
-
-        /* Run ELF constructors directly (bypass CRT's broken constructor loop) */
+        /* Run ALL 166 constructors to initialize C++ statics */
         fprintf(stderr, "[init] Running 166 ELF constructors...\n");
         fflush(stderr);
         run_elf_constructors(&ctx);
         fprintf(stderr, "[init] Constructors complete\n");
         fflush(stderr);
-
-        /* Re-zero stack after constructors — they leave dirty data (0x74 pattern)
-         * that corrupts LR/TOC when game main reads from inherited stack frames. */
+        /* Re-zero stack and re-init context for game main */
         memset(vm_base + stack_addr, 0, FLOW_STACK_SIZE);
         ppu_context_init(&ctx);
         ppu_set_stack(&ctx, stack_addr, FLOW_STACK_SIZE);
         ctx.cia = 0x000CB9CC;
-        ctx.gpr[2] = 0x008969A8;  /* TOC */
-        ctx.gpr[13] = 0x0F007000; /* TLS */
-        ctx.lr = 0x008175FC;       /* sys_process_exit stub */
-        /* Write TOC to SP+0x28 for PPC64 ABI */
+        ctx.gpr[2] = 0x008969A8;
+        ctx.gpr[13] = 0x0F007000;
+        ctx.lr = 0x008175FC;
         {
             uint64_t toc_be = _byteswap_uint64(ctx.gpr[2]);
             memcpy(vm_base + (uint32_t)ctx.gpr[1] + 0x28, &toc_be, 8);
         }
-        fprintf(stderr, "[init] Re-zeroed stack after constructors, SP=0x%08X\n",
-                (uint32_t)ctx.gpr[1]);
+        fprintf(stderr, "[init] Stack cleaned, SP=0x%08X\n", (uint32_t)ctx.gpr[1]);
 
         g_abort_redirect = 99;  /* prevent further redirects */
 
