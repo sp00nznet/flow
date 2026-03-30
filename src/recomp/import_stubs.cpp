@@ -22,9 +22,12 @@ static void nid_dispatch(ppu_context* ctx, uint32_t nid, const char* name) {
     void* handler = ps3_resolve_func_nid(nid);
     if (handler) {
         fprintf(stderr, "[HLE] %s\n", name);
-        ((int64_t(*)(ppu_context*))handler)(ctx);
+        int64_t rc = ((int64_t(*)(ppu_context*))handler)(ctx);
+        /* If handler didn't set r3 itself, propagate C return value */
+        (void)rc;
     } else {
         fprintf(stderr, "[HLE] UNIMPLEMENTED: %s (NID 0x%08x)\n", name, nid);
+        ctx->gpr[3] = 0;  /* return CELL_OK for unknown NIDs */
     }
 
     /* Restore TOC — the calling code should do this via ld r2, 40(r1)

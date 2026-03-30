@@ -1,8 +1,219 @@
 /* Auto-generated: run ELF constructors via OPD resolution */
 #include "recomp/ppu_recomp.h"
+#include <cstdio>
+
+#include "../../../ps3/runtime/memory/vm.h"
+static inline uint32_t _ctor_check(uint32_t addr) {
+    return *(uint32_t*)(vm_base + addr);
+}
 
 extern "C" void run_elf_constructors(ppu_context* ctx)
 {
+    const uint32_t watch_addr = 0x10163764;
+
+    /* Batch 1: constructors 1-20 */
+    func_00012F14(ctx);
+    func_0001CD2C(ctx);
+    func_00027BC0(ctx);
+    func_00028C6C(ctx);
+    func_0002CE7C(ctx);
+    func_0002D870(ctx);
+    func_0002F290(ctx);
+    func_0002FA6C(ctx);
+    func_000320C8(ctx);
+    func_00033300(ctx);
+    func_00034E28(ctx);
+    func_00038274(ctx);
+    func_0003D35C(ctx);
+    func_0003EAEC(ctx);
+    func_0003F300(ctx);
+    func_00040B64(ctx);
+    func_00041700(ctx);
+    func_00042310(ctx);
+    func_00042EB0(ctx);
+    func_00044A20(ctx);
+    { uint32_t v = _ctor_check(watch_addr);
+      if (v) fprintf(stderr, "[ctor] 0x%08X dirty after batch 1 (ctor 1-20): 0x%08X\n", watch_addr, v); }
+
+    /* Batch 2: constructors 21-40 */
+    func_0004611C(ctx);
+    func_0004E164(ctx);
+    func_00055CD8(ctx);
+    func_00056A98(ctx);
+    func_00057C18(ctx);
+    func_00058898(ctx);
+    func_0005D9AC(ctx);
+    func_0006D5DC(ctx);
+    func_0006F808(ctx);
+    func_00071910(ctx);
+    func_00072214(ctx);
+    func_000759FC(ctx);
+    func_0007B9B0(ctx);
+    func_000803A0(ctx);
+    func_00081CC0(ctx);
+    func_00083C5C(ctx);
+    func_00084B8C(ctx);
+    func_000857FC(ctx);
+    func_00086E10(ctx);
+    func_0008A020(ctx);
+    { uint32_t v = _ctor_check(watch_addr);
+      if (v) fprintf(stderr, "[ctor] 0x%08X dirty after batch 2 (ctor 21-40): 0x%08X\n", watch_addr, v); }
+
+    /* Batch 3: constructors 41-60 */
+    func_0008DD7C(ctx);
+    func_0008F9B0(ctx);
+    func_00094F50(ctx);
+    func_00095EE0(ctx);
+    func_00098590(ctx);
+    func_0009AE24(ctx);
+    func_0009B6EC(ctx);
+    func_0009D888(ctx);
+    func_000A691C(ctx);
+    func_000A7B60(ctx);
+    func_000AD180(ctx);
+    func_000BEFD4(ctx);
+    func_000C70C4(ctx);
+    func_000D38DC(ctx);
+    func_000D6FA0(ctx);
+    func_000DAC98(ctx);
+    func_000EE54C(ctx);
+    func_000F0CD0(ctx);
+    func_000F2040(ctx);
+    func_000F5094(ctx);
+    { uint32_t v = _ctor_check(watch_addr);
+      if (v) fprintf(stderr, "[ctor] 0x%08X dirty after batch 3 (ctor 41-60): 0x%08X\n", watch_addr, v); }
+
+    /* Batch 4: constructors 61-80 */
+    func_000F681C(ctx);
+    func_000F7FC8(ctx);
+    func_000FD36C(ctx);
+    func_000FDA08(ctx);
+    func_00115BA8(ctx);
+    func_0013C114(ctx);
+    func_00147DC8(ctx);
+    func_0015864C(ctx);
+    func_001825DC(ctx);
+    func_001982BC(ctx);
+    func_0019C08C(ctx);
+    func_001A7240(ctx);
+    func_001AEE7C(ctx);
+    func_001B2CF4(ctx);
+    func_001BA21C(ctx);
+    func_001BF870(ctx);
+    func_001C541C(ctx);
+    func_001E2108(ctx);
+    func_00211708(ctx);
+    func_00229E48(ctx);
+    { uint32_t v = _ctor_check(watch_addr);
+      if (v) fprintf(stderr, "[ctor] 0x%08X dirty after batch 4 (ctor 61-80): 0x%08X\n", watch_addr, v); }
+
+    /* Batch 5: constructors 81-100 */
+    func_00236530(ctx);
+    func_0023BEFC(ctx);
+    func_0023C020(ctx);
+    func_00256628(ctx);
+    func_00269B40(ctx);
+    func_00275F94(ctx);
+    func_0027E984(ctx);
+    func_002834FC(ctx);
+    func_0028918C(ctx);
+    func_0028E62C(ctx);
+    func_00293CAC(ctx);
+    func_002AF514(ctx);
+    func_002C9F54(ctx);
+    func_002D0D48(ctx);
+    func_002D5AEC(ctx);
+    func_002DBDE0(ctx);
+    func_002E353C(ctx);
+    func_002E6878(ctx);
+    func_002EC1A0(ctx);
+    func_00305010(ctx);
+    { uint32_t v = _ctor_check(watch_addr);
+      if (v) fprintf(stderr, "[ctor] 0x%08X dirty after batch 5 (ctor 81-100): 0x%08X\n", watch_addr, v); }
+
+    /* Batch 6: constructors 101-120 */
+    func_0035C808(ctx);
+    func_0037F230(ctx);
+    func_003B133C(ctx);
+    func_003F2AEC(ctx);
+    func_0040CB2C(ctx);
+    func_0042ADB4(ctx);
+    func_0043E524(ctx);
+    func_004431AC(ctx);
+    func_00457194(ctx);
+    func_00462BF4(ctx);
+    func_004706A0(ctx);
+    func_004B6E44(ctx);
+    func_004EB06C(ctx);
+    func_004F984C(ctx);
+    func_004FE524(ctx);
+    func_00508B28(ctx);
+    func_0050D734(ctx);
+    func_0053D958(ctx);
+    func_005401B8(ctx);
+    func_00542E84(ctx);
+    { uint32_t v = _ctor_check(watch_addr);
+      if (v) fprintf(stderr, "[ctor] 0x%08X dirty after batch 6 (ctor 101-120): 0x%08X\n", watch_addr, v); }
+
+    /* Batch 7: constructors 121-140 */
+    func_00560298(ctx);
+    func_00565924(ctx);
+    func_005719FC(ctx);
+    func_005A6D60(ctx);
+    func_005D6224(ctx);
+    func_005D7F8C(ctx);
+    func_005DA950(ctx);
+    func_005E5190(ctx);
+    func_005E9FEC(ctx);
+    func_005EE160(ctx);
+    func_005F1264(ctx);
+    func_005F2808(ctx);
+    func_005F7184(ctx);
+    func_005FD0B4(ctx);
+    func_006003D8(ctx);
+    func_006074A8(ctx);
+    func_006091AC(ctx);
+    func_0060E33C(ctx);
+    func_006114C4(ctx);
+    func_006154EC(ctx);
+    { uint32_t v = _ctor_check(watch_addr);
+      if (v) fprintf(stderr, "[ctor] 0x%08X dirty after batch 7 (ctor 121-140): 0x%08X\n", watch_addr, v); }
+
+    /* Batch 8: constructors 141-166 */
+    func_00627094(ctx);
+    func_0062B304(ctx);
+    func_0062BB94(ctx);
+    func_0062F86C(ctx);
+    func_006CD3E4(ctx);
+    func_006CEC64(ctx);
+    func_006D48BC(ctx);
+    func_006D84B4(ctx);
+    func_006F063C(ctx);
+    func_006F5A2C(ctx);
+    func_007A49F0(ctx);
+    func_007A5E60(ctx);
+    func_007A7548(ctx);
+    func_007A8030(ctx);
+    func_007A8764(ctx);
+    func_007AAB64(ctx);
+    func_007AAE74(ctx);
+    func_007AB084(ctx);
+    func_007AB1A4(ctx);
+    func_007AB658(ctx);
+    func_007AB738(ctx);
+    func_007ABA54(ctx);
+    func_007ABFF8(ctx);
+    func_007AC140(ctx);
+    func_007AD650(ctx);
+    func_007BC2F8(ctx);
+    { uint32_t v = _ctor_check(watch_addr);
+      if (v) fprintf(stderr, "[ctor] 0x%08X dirty after batch 8 (ctor 141-166): 0x%08X\n", watch_addr, v); }
+}
+
+/* Run constructors 1-151 only (skip 152-170 that CRT already ran via bctrl). */
+extern "C" void run_remaining_constructors(ppu_context* ctx)
+{
+    /* Constructors 1-151 (func_00012F14 through func_006CEC64) */
     func_00012F14(ctx);
     func_0001CD2C(ctx);
     func_00027BC0(ctx);
@@ -149,24 +360,6 @@ extern "C" void run_elf_constructors(ppu_context* ctx)
     func_0062F86C(ctx);
     func_006CD3E4(ctx);
     func_006CEC64(ctx);
-    func_006D48BC(ctx);
-    func_006D84B4(ctx);
-    func_006F063C(ctx);
-    func_006F5A2C(ctx);
-    func_007A49F0(ctx);
-    func_007A5E60(ctx);
-    func_007A7548(ctx);
-    func_007A8030(ctx);
-    func_007A8764(ctx);
-    func_007AAB64(ctx);
-    func_007AAE74(ctx);
-    func_007AB084(ctx);
-    func_007AB1A4(ctx);
-    func_007AB658(ctx);
-    func_007AB738(ctx);
-    func_007ABA54(ctx);
-    func_007ABFF8(ctx);
-    func_007AC140(ctx);
-    func_007AD650(ctx);
-    func_007BC2F8(ctx);
+    /* STOP: constructors 152-170 already ran in CRT phase:
+     * func_006D48BC through func_007BC2F8 */
 }
