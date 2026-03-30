@@ -37,7 +37,7 @@ extern "C" {
 
 /* Virtual memory base pointer (set by vm_init).
  * vm.h declares this extern — we must define it exactly once. */
-uint8_t* vm_base = nullptr;
+extern "C" uint8_t* vm_base = nullptr;
 
 /* Also aliased as vm::g_base for C++ vm::ptr<T> */
 namespace vm { uint8_t* g_base = nullptr; }
@@ -48,6 +48,9 @@ lv2_syscall_table g_lv2_syscalls;
 /* These are defined in the ps3recomp runtime library
  * (sys_fs.c, sys_ppu_thread.c). Declared extern here for access. */
 extern "C" char g_sys_fs_root[512];
+extern "C" void sys_lwmutex_reset_all(void);
+extern "C" void hle_guest_malloc_reset(void);
+extern "C" void run_elf_constructors(ppu_context* ctx);
 
 /* ---------------------------------------------------------------------------
  * Forward declarations for recompiled code (from stubs.cpp or generated)
@@ -56,6 +59,7 @@ extern "C" char g_sys_fs_root[512];
 struct RecompiledFunc {
     uint32_t    guest_addr;
     void      (*host_func)(void* ctx);
+    const char* name;
 };
 
 extern "C" const RecompiledFunc g_recompiled_funcs[];
@@ -83,7 +87,7 @@ extern "C" void rsx_null_backend_shutdown(void);
 extern "C" int rsx_null_backend_pump_messages(void);
 
 /* Trampoline continuation (from indirect_dispatch.cpp) */
-extern "C" void (*g_trampoline_fn)(void*);
+extern "C" __declspec(thread) void (*g_trampoline_fn)(void*);
 
 /* Abort redirect (from hle_modules.cpp) */
 #include <setjmp.h>
@@ -121,7 +125,10 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ep) {
         /* Demand-paging only active after CRT redirect to game main.
          * During CRT, we WANT constructors to crash so the CRT aborts
          * and we redirect to game main. */
-        if (g_abort_redirect >= 2 && g_abort_redirect != 1 && vm_base && addr >= base && addr < base + 0x100000000ULL) {
+        /* Demand-paging: active after CRT redirect (g_abort_redirect >= 2).
+         * During CRT, constructors crash on uncommitted pages → CRT aborts → redirect.
+         * During game main, demand paging ensures no page faults. */
+        if (vm_base && addr >= base && addr < base + 0x100000000ULL) {
             /* Demand-paging: commit the faulting page on first access.
              * The PS3 address space is 4GB but we only pre-commit known
              * regions. Constructors and engine init may touch pages we
@@ -149,11 +156,23 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ep) {
         }
 
         /* Not in VM range or commit failed — log and propagate */
-        uint32_t guest = vm_base ? (uint32_t)(addr - base) : 0;
         int is_write = (int)ep->ExceptionRecord->ExceptionInformation[0];
-        fprintf(stderr, "[CRASH-VEH] AV %s guest=0x%08X RIP=%p addr=%p\n",
-                is_write ? "WRITE" : "READ", guest,
-                (void*)ep->ContextRecord->Rip, (void*)addr);
+        int in_vm = (vm_base && addr >= base && addr < base + 0x100000000ULL);
+        if (in_vm) {
+            uint32_t guest = (uint32_t)(addr - base);
+            fprintf(stderr, "[CRASH-VEH] AV %s guest=0x%08X RIP=%p\n",
+                    is_write ? "WRITE" : "READ", guest,
+                    (void*)ep->ContextRecord->Rip);
+        } else {
+            HMODULE hmod = NULL;
+            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                               (LPCSTR)ep->ContextRecord->Rip, &hmod);
+            uintptr_t exe_base = (uintptr_t)hmod;
+            fprintf(stderr, "[CRASH-VEH] AV %s HOST addr=%p (NOT in VM!) RIP=%p (exe+0x%llX)\n",
+                    is_write ? "WRITE" : "READ", (void*)addr,
+                    (void*)ep->ContextRecord->Rip,
+                    (unsigned long long)(ep->ContextRecord->Rip - exe_base));
+        }
         fflush(stderr);
     }
     return EXCEPTION_CONTINUE_SEARCH;
@@ -254,9 +273,21 @@ int main(int argc, char* argv[])
             printf("[init] Extra heap committed: 0x20000000 - 0x30000000 (256 MB)\n");
         }
 
-        /* General purpose region (0x30000000 - 0xC0000000) for game allocations */
-        vm_commit(0x30000000, 0x90000000);
-        printf("[init] General region committed: 0x30000000 - 0xC0000000\n");
+        /* General purpose region (0x30000000 - 0xC0000000) for game allocations.
+         * Commit in chunks to avoid a single massive 2.25GB allocation. */
+        {
+            int chunks_ok = 0, chunks_fail = 0;
+            for (uint32_t base = 0x30000000; base < 0xC0000000; base += 0x10000000) {
+                if (vm_commit(base, 0x10000000) == CELL_OK)
+                    chunks_ok++;
+                else
+                    chunks_fail++;
+            }
+            printf("[init] General region committed: 0x30000000 - 0xC0000000 (%d/9 chunks OK",
+                   chunks_ok);
+            if (chunks_fail) printf(", %d FAILED", chunks_fail);
+            printf(")\n");
+        }
 
         /* RSX VRAM region — commit in chunks to avoid huge single allocation.
          * PS3 maps RSX local memory at high addresses. */
@@ -364,9 +395,10 @@ int main(int argc, char* argv[])
 
     printf("[init] Entering game at 0x%X...\n\n", FLOW_ENTRY_POINT);
 
-    /* Run the CRT startup.  If the CRT aborts (constructor failures from
-     * split-function backward-branch recursion), longjmp back here and
-     * redirect directly to game main. */
+    /* Run the CRT startup.  If constructors crash (page fault on
+     * uncommitted pages) → SEH catches → CRT eventually calls
+     * sys_ppu_thread_get_id in a spin → spin detection longjmps
+     * → redirect to game main with demand paging enabled. */
     if (setjmp(g_abort_jmp) == 0) {
 #ifdef _WIN32
         __try {
@@ -384,11 +416,18 @@ int main(int argc, char* argv[])
         }
 #endif
     }
+    /* CRT done (either completed or was redirected) */
 
     if (g_abort_redirect == 1) {
         printf("\n[init] CRT abort caught — redirecting to game main (func_000CB9CC)\n");
-        /* Reset PPU context for a clean game main entry.
-         * Reuse the original stack (which is still committed). */
+        /* Reset PPU context and OS state for a clean game main entry.
+         * CRT abort may have left mutexes locked, heap partially used,
+         * and GOT/data segments corrupted by partial CRT initialization. */
+        sys_lwmutex_reset_all();
+        hle_guest_malloc_reset();
+        /* Reload ELF data segments to restore GOT and .data to original state */
+        elf_load_segments(elf_path);
+        printf("[init] Reloaded ELF data segments\n");
         ppu_context_init(&ctx);
         ppu_set_stack(&ctx, stack_addr, FLOW_STACK_SIZE);
         printf("[init] Reusing stack: 0x%08X (%u KB)\n", stack_addr, FLOW_STACK_SIZE / 1024);
@@ -398,11 +437,88 @@ int main(int argc, char* argv[])
         ctx.gpr[2] = 0x008969A8;  /* TOC */
         ctx.gpr[13] = 0x0F007000; /* TLS (from earlier init) */
         ctx.lr = 0x008175FC;       /* sys_process_exit stub */
-        /* null backchain to terminate stack walks */
-        vm_write32((uint32_t)ctx.gpr[1], 0);
-        vm_write32((uint32_t)ctx.gpr[1] + 4, 0);
+        /* Zero the entire stack region to clear CRT corruption (0x74 pattern).
+         * The stack spans from stack_addr to stack_addr + FLOW_STACK_SIZE. */
+        memset(vm_base + stack_addr, 0, FLOW_STACK_SIZE);
+        printf("[init] Cleared stack region: 0x%08X - 0x%08X\n",
+               stack_addr, stack_addr + FLOW_STACK_SIZE);
+
+        /* Write TOC to SP+0x28 (PPC64 ABI: TOC save area in stack frame). */
+        {
+            uint64_t toc_be = _byteswap_uint64(ctx.gpr[2]);
+            memcpy(vm_base + (uint32_t)ctx.gpr[1] + 0x28, &toc_be, 8);
+        }
+
+        /* Run ELF constructors directly (bypass CRT's broken constructor loop) */
+        fprintf(stderr, "[init] Running 166 ELF constructors...\n");
+        fflush(stderr);
+        run_elf_constructors(&ctx);
+        fprintf(stderr, "[init] Constructors complete\n");
+        fflush(stderr);
+
+        /* Re-zero stack after constructors — they leave dirty data (0x74 pattern)
+         * that corrupts LR/TOC when game main reads from inherited stack frames. */
+        memset(vm_base + stack_addr, 0, FLOW_STACK_SIZE);
+        ppu_context_init(&ctx);
+        ppu_set_stack(&ctx, stack_addr, FLOW_STACK_SIZE);
+        ctx.cia = 0x000CB9CC;
+        ctx.gpr[2] = 0x008969A8;  /* TOC */
+        ctx.gpr[13] = 0x0F007000; /* TLS */
+        ctx.lr = 0x008175FC;       /* sys_process_exit stub */
+        /* Write TOC to SP+0x28 for PPC64 ABI */
+        {
+            uint64_t toc_be = _byteswap_uint64(ctx.gpr[2]);
+            memcpy(vm_base + (uint32_t)ctx.gpr[1] + 0x28, &toc_be, 8);
+        }
+        fprintf(stderr, "[init] Re-zeroed stack after constructors, SP=0x%08X\n",
+                (uint32_t)ctx.gpr[1]);
 
         g_abort_redirect = 99;  /* prevent further redirects */
+
+        /* Watchdog: sample execution state periodically */
+        static volatile ppu_context* g_watchdog_ctx = &ctx;
+        {
+            HANDLE hMainThread = GetCurrentThread();
+            HANDLE hReal = NULL;
+            DuplicateHandle(GetCurrentProcess(), hMainThread,
+                            GetCurrentProcess(), &hReal, 0, FALSE,
+                            DUPLICATE_SAME_ACCESS);
+            CreateThread(NULL, 0, [](LPVOID p) -> DWORD {
+                HANDLE h = (HANDLE)p;
+                for (int i = 0; i < 10; i++) {
+                    Sleep(2000);
+                    SuspendThread(h);
+                    CONTEXT c = {}; c.ContextFlags = CONTEXT_CONTROL;
+                    GetThreadContext(h, &c);
+                    /* Read guest state while thread is suspended */
+                    volatile ppu_context* gctx = g_watchdog_ctx;
+                    uint64_t lr = gctx->lr;
+                    uint64_t sp = gctx->gpr[1];
+                    uint64_t r3 = gctx->gpr[3];
+                    uint64_t ctr = gctx->ctr;
+                    uint64_t cia = gctx->cia;
+                    uint64_t r4 = gctx->gpr[4];
+                    uint64_t r5 = gctx->gpr[5];
+                    ResumeThread(h);
+                    HMODULE hm = NULL;
+                    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                       (LPCSTR)c.Rip, &hm);
+                    fprintf(stderr, "[WATCHDOG] RIP=exe+0x%llX CIA=0x%08X LR=0x%llX SP=0x%llX r3=0x%llX r4=0x%llX r5=0x%llX CTR=0x%llX\n",
+                            (unsigned long long)(c.Rip - (uintptr_t)hm),
+                            (uint32_t)cia,
+                            (unsigned long long)lr,
+                            (unsigned long long)sp,
+                            (unsigned long long)r3,
+                            (unsigned long long)r4,
+                            (unsigned long long)r5,
+                            (unsigned long long)ctr);
+                    fflush(stderr);
+                }
+                CloseHandle(h);
+                return 0;
+            }, hReal, 0, NULL);
+        }
+
 #ifdef _WIN32
         __try {
 #endif

@@ -30,10 +30,11 @@
 struct RecompiledFunc {
     uint32_t    guest_addr;
     void      (*host_func)(void* ctx);
+    const char* name;
 };
 
 extern "C" const RecompiledFunc g_recompiled_funcs[] = {
-    { 0, nullptr }   /* sentinel */
+    { 0, nullptr, nullptr }   /* sentinel */
 };
 
 extern "C" const size_t g_recompiled_func_count = 0;

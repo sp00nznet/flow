@@ -68,5 +68,15 @@ static void hle_realloc(ppu_context* ctx)
     }
 }
 
+/* Reset heap state — called on CRT abort redirect to discard CRT allocations */
+extern "C" void hle_guest_malloc_reset(void)
+{
+    /* Zero the heap region to clear stale data from previous passes */
+    if (vm_base)
+        memset(vm_base + 0x00A00000, 0, g_heap_end - 0x00A00000);
+    g_heap_ptr = 0x00A00000;
+    g_alloc_count = 0;
+}
+
 /* Note: malloc is patched by modifying func_006B738C in ppu_recomp.cpp
  * to call hle_guest_malloc() directly. No runtime table patching needed. */

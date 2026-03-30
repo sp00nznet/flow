@@ -13,7 +13,8 @@
  * so we do it here to prevent the caller's TOC restore from reading garbage. */
 static void nid_dispatch(ppu_context* ctx, uint32_t nid, const char* name) {
     /* Save TOC to caller's stack frame at SP+0x28 (decimal 40) per PPC64 ABI */
-    vm_write64((uint32_t)ctx->gpr[1] + 0x28, ctx->gpr[2]);
+    uint64_t saved_toc = ctx->gpr[2];
+    vm_write64((uint32_t)ctx->gpr[1] + 0x28, saved_toc);
 
     /* Also save LR — some callers restore LR from the stack after import calls */
     vm_write64((uint32_t)ctx->gpr[1] + 0x10, ctx->lr);
@@ -25,6 +26,11 @@ static void nid_dispatch(ppu_context* ctx, uint32_t nid, const char* name) {
     } else {
         fprintf(stderr, "[HLE] UNIMPLEMENTED: %s (NID 0x%08x)\n", name, nid);
     }
+
+    /* Restore TOC — the calling code should do this via ld r2, 40(r1)
+     * but if trampolines skip the restore instruction, TOC stays corrupted.
+     * Force TOC to the game's known value since flOw is single-module. */
+    ctx->gpr[2] = 0x008969A8;
 }
 
 /* cellSysutil::cellVideoOutConfigure */
