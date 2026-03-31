@@ -433,6 +433,15 @@ int main(int argc, char* argv[])
         fprintf(stderr, "[init] Reloaded ELF data segments\n");
         fflush(stderr);
         memset(vm_base + stack_addr, 0, FLOW_STACK_SIZE);
+        /* Zero memory gaps between loaded ELF segments.
+         * The CRT wrote 0x74 fill patterns to these committed-but-unloaded areas.
+         * Gaps: 0x0-0x10000 (below seg0), 0x8186A0-0x820000 (between seg0-seg1),
+         * 0x895CD4-0xA00000 (between seg1 and heap), 0x3C4BD-0x40000 (seg2-seg3 gap) */
+        memset(vm_base, 0, 0x10000);               /* below segment 0 */
+        memset(vm_base + 0x8186A0, 0, 0x820000 - 0x8186A0);  /* seg0-seg1 gap */
+        memset(vm_base + 0x895CD4, 0, 0xA00000 - 0x895CD4);  /* seg1-heap gap */
+        memset(vm_base + 0x1003C4BD, 0, 0x10040000 - 0x1003C4BD);  /* seg2-seg3 gap */
+        fprintf(stderr, "[init] Zeroed memory gaps between segments\n");
         ppu_context_init(&ctx);
         ppu_set_stack(&ctx, stack_addr, FLOW_STACK_SIZE);
         g_abort_redirect = 2;
@@ -444,6 +453,22 @@ int main(int argc, char* argv[])
             uint64_t toc_be = _byteswap_uint64(ctx.gpr[2]);
             memcpy(vm_base + (uint32_t)ctx.gpr[1] + 0x28, &toc_be, 8);
         }
+        /* Re-initialize TLS from the ELF's PT_TLS template.
+         * The CRT partially initialized before the spin, leaving dirty data
+         * in TLS that constructors would propagate to BSS as 0x74 patterns.
+         * The PT_TLS data at 0x00895CD0 was restored by ELF reload above. */
+        {
+            const uint32_t tls_base = 0x0F000000;
+            const uint32_t tls_src = 0x00895CD0;  /* PT_TLS vaddr */
+            const uint32_t tls_filesz = 4;         /* PT_TLS filesz */
+            const uint32_t tls_memsz = 0x1DC;      /* PT_TLS memsz */
+            memcpy(vm_base + tls_base, vm_base + tls_src, tls_filesz);
+            memset(vm_base + tls_base + tls_filesz, 0, tls_memsz - tls_filesz);
+            fprintf(stderr, "[init] Re-initialized TLS from ELF template: %u bytes data + %u bytes BSS\n",
+                    tls_filesz, tls_memsz - tls_filesz);
+            fflush(stderr);
+        }
+
         /* Run ALL 166 constructors to initialize C++ statics */
         fprintf(stderr, "[init] Running 166 ELF constructors...\n");
         fflush(stderr);

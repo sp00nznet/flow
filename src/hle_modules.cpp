@@ -327,6 +327,16 @@ static int64_t bridge_sys_lwmutex_lock(ppu_context* ctx)
         s_last_mutex = mutex_addr;
     }
 
+    /* Force-succeed locks on corrupted mutex addresses.
+     * The CRT's FILE* structures have 0x74 fill patterns. Printf tries to
+     * lock the stdout mutex at 0x74747484 (corrupted pointer). Without this
+     * fix, the lock fails and printf loops forever. */
+    if (mutex_addr > 0x20000000 && mutex_addr < 0xD0000000) {
+        /* Address is in unmapped/garbage region — force succeed */
+        ctx->gpr[3] = 0;
+        return 0;
+    }
+
     /* Read the lock_var to identify which host mutex to use */
     sys_lwmutex_t_hle mutex_hle;
     mutex_hle.lock_var       = vm_read64(mutex_addr);

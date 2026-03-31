@@ -272,6 +272,15 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
             fflush(stderr);
         }
 
+        /* Intercept CRT printf/vsnprintf — the CRT's FILE* structures are
+         * corrupted (fd=0x7474) because CRT stdio wasn't fully initialized.
+         * Skip the recompiled CRT code and just return 0 (no output). */
+        if (target == 0x006BF0D0 || target == 0x006BCD28) {
+            /* printf/vsnprintf: set return value to 0 (chars written) and skip */
+            ctx->gpr[3] = 0;
+            goto done_dispatch;
+        }
+
         /* Guest SP guard: detect guest stack overflow early */
         {
             uint32_t sp32 = (uint32_t)ctx->gpr[1];
@@ -351,6 +360,7 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
             fprintf(stderr, "[dispatch] returned from 0x%08X\n", target);
             fflush(stderr);
         }
+done_dispatch: ;
     } else {
         static int s_miss_count = 0;
         if (s_miss_count < 50) {
@@ -358,7 +368,7 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
                     target, ctx->cia, (uint32_t)ctx->lr, (uint32_t)ctx->gpr[1]);
             s_miss_count++;
         }
-        ctx->gpr[3] = (uint64_t)(int64_t)(-1);
+        ctx->gpr[3] = 0;  /* Return CELL_OK for unresolvable targets */
 
         /* Detect spin on unresolvable targets (CRT stuck in constructor
          * table with garbage function pointers).  After enough misses to
