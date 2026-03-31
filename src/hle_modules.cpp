@@ -172,19 +172,22 @@ static int64_t bridge_sys_process_exit(ppu_context* ctx)
         longjmp(g_abort_jmp, 1);
     }
 
-    /* Game main phase: ignore first few exit(1) calls from assertion handler.
-     * The assertions fire on null PhyreEngine pointers but the game may
-     * still be able to proceed past them to reach GCM init. */
+    /* Game main phase: the game's assertion handler calls exit(1) then
+     * exitspawn. Since exitspawn can't actually restart the process,
+     * returning from exit leads to a dead loop. Instead, halt cleanly
+     * after a few assertions. */
     if (g_abort_redirect >= 2) {
-        static int s_exit_ignored = 0;
-        s_exit_ignored++;
-        if (s_exit_ignored <= 5 && status != 0) {
-            fprintf(stderr, "[HLE] Ignoring sys_process_exit(%d) #%d — continuing\n",
-                    status, s_exit_ignored);
+        static int s_exit_count = 0;
+        s_exit_count++;
+        if (s_exit_count <= 3 && status != 0) {
+            fprintf(stderr, "[HLE] Game assertion exit(%d) #%d — continuing past assertion\n",
+                    status, s_exit_count);
             fflush(stderr);
             ctx->gpr[3] = 0;
-            return 0; /* return to caller */
+            return 0;
         }
+        fprintf(stderr, "[HLE] Too many assertion exits (%d), stopping\n", s_exit_count);
+        fflush(stderr);
     }
 
     exit(status);
