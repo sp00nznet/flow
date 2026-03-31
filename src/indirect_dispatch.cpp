@@ -272,6 +272,20 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
             fflush(stderr);
         }
 
+        /* Skip CRT printf paths that get stuck on corrupted FILE* structures.
+         * These are CRT-internal format parsers called through function pointers.
+         * The game's code continues after they return. */
+        if (target == 0x006BF0D0 || target == 0x006BCD28 ||
+            target == 0x006BF410) {
+            ctx->gpr[3] = 0;
+            if (s_log_count < 200) {
+                fprintf(stderr, "[dispatch] SKIP CRT printf 0x%08X (call #%d)\n",
+                        target, s_call_count);
+                fflush(stderr);
+            }
+            goto done_dispatch;
+        }
+
         /* Guest SP guard: detect guest stack overflow early */
         {
             uint32_t sp32 = (uint32_t)ctx->gpr[1];

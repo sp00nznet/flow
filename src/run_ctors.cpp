@@ -9,7 +9,7 @@ static inline uint32_t _ctor_check(uint32_t addr) {
 
 extern "C" void run_elf_constructors(ppu_context* ctx)
 {
-    const uint32_t watch_addr = 0x10163764;
+    const uint32_t watch_addr = 0x101EC148;  /* PhyreEngine memory allocator context */
 
     /* Batch 1: constructors 1-20 */
     func_00012F14(ctx);
