@@ -489,6 +489,19 @@ int main(int argc, char* argv[])
         }
         fprintf(stderr, "[init] Stack cleaned, SP=0x%08X\n", (uint32_t)ctx.gpr[1]);
 
+        /* Debug: check key BSS variables that affect PhyreEngine assertion path */
+        {
+            uint32_t flag_ptr = vm_read32(0x008914AC); /* TOC-0x54FC → assertion flag ptr */
+            uint8_t flag_val = *(vm_base + flag_ptr);
+            fprintf(stderr, "[debug] Assertion flag: *(0x%08X) = 0x%02X (should be 0 to skip assert)\n",
+                    flag_ptr, flag_val);
+            /* Force the assertion flag to 0 to skip PhyreEngine assertion */
+            if (flag_val != 0) {
+                *(vm_base + flag_ptr) = 0;
+                fprintf(stderr, "[debug] Forced assertion flag to 0\n");
+            }
+        }
+
         g_abort_redirect = 99;  /* prevent further redirects */
 
         /* Watchdog: sample execution state periodically */
