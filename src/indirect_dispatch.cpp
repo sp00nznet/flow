@@ -272,15 +272,6 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
             fflush(stderr);
         }
 
-        /* Intercept CRT printf/vsnprintf — the CRT's FILE* structures are
-         * corrupted (fd=0x7474) because CRT stdio wasn't fully initialized.
-         * Skip the recompiled CRT code and just return 0 (no output). */
-        if (target == 0x006BF0D0 || target == 0x006BCD28) {
-            /* printf/vsnprintf: set return value to 0 (chars written) and skip */
-            ctx->gpr[3] = 0;
-            goto done_dispatch;
-        }
-
         /* Guest SP guard: detect guest stack overflow early */
         {
             uint32_t sp32 = (uint32_t)ctx->gpr[1];
