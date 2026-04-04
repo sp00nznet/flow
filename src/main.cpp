@@ -52,6 +52,7 @@ extern "C" void sys_lwmutex_reset_all(void);
 extern "C" void hle_guest_malloc_reset(void);
 extern "C" void run_elf_constructors(ppu_context* ctx);
 extern "C" void run_remaining_constructors(ppu_context* ctx);
+extern "C" void vm_got_snapshot_init(void);
 
 /* ---------------------------------------------------------------------------
  * Forward declarations for recompiled code (from stubs.cpp or generated)
@@ -498,6 +499,10 @@ int main(int argc, char* argv[])
         fflush(stderr);
         run_elf_constructors(&ctx);
         fprintf(stderr, "[init] Constructors complete\n");
+
+        /* Snapshot the GOT region AFTER constructors so we can restore
+         * zeroed entries during game execution. */
+        vm_got_snapshot_init();
         fflush(stderr);
         /* Re-zero stack and re-init context for game main */
         memset(vm_base + stack_addr, 0, FLOW_STACK_SIZE);
@@ -513,16 +518,18 @@ int main(int argc, char* argv[])
         }
         fprintf(stderr, "[init] Stack cleaned, SP=0x%08X\n", (uint32_t)ctx.gpr[1]);
 
-        /* Debug: check key BSS variables that affect PhyreEngine assertion path */
+        /* Check PhyreEngine init flag at TOC-0x54FC.
+         * Game checks this byte: if 0 → cleanup/exit, if non-zero → continue.
+         * Constructors set this to indicate initialization is complete.
+         * If constructors didn't set it, force it to 1 so the game continues. */
         {
-            uint32_t flag_ptr = vm_read32(0x008914AC); /* TOC-0x54FC → assertion flag ptr */
+            uint32_t flag_ptr = vm_read32(0x008914AC); /* TOC-0x54FC */
             uint8_t flag_val = *(vm_base + flag_ptr);
-            fprintf(stderr, "[debug] Assertion flag: *(0x%08X) = 0x%02X (should be 0 to skip assert)\n",
+            fprintf(stderr, "[debug] PhyreEngine init flag: *(0x%08X) = 0x%02X\n",
                     flag_ptr, flag_val);
-            /* Force the assertion flag to 0 to skip PhyreEngine assertion */
-            if (flag_val != 0) {
-                *(vm_base + flag_ptr) = 0;
-                fprintf(stderr, "[debug] Forced assertion flag to 0\n");
+            if (flag_val == 0) {
+                *(vm_base + flag_ptr) = 1;
+                fprintf(stderr, "[debug] Forced init flag to 1 (was 0 — constructors may not have set it)\n");
             }
         }
 
