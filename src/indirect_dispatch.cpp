@@ -381,8 +381,16 @@ done_dispatch: ;
     } else {
         static int s_miss_count = 0;
         if (s_miss_count < 50) {
-            fprintf(stderr, "[dispatch] MISS: bctrl -> 0x%08X (CIA=0x%08X LR=0x%08X SP=0x%08X)\n",
-                    target, ctx->cia, (uint32_t)ctx->lr, (uint32_t)ctx->gpr[1]);
+            extern uint32_t vm_read32(uint64_t addr);
+            uint32_t opd_func = 0, opd_toc = 0;
+            if (target > 0 && target < 0x20000000) {
+                opd_func = vm_read32(target);
+                opd_toc  = vm_read32(target + 4);
+            }
+            fprintf(stderr, "[dispatch] MISS: bctrl -> 0x%08X (CIA=0x%08X LR=0x%08X SP=0x%08X) OPD=[0x%08X, 0x%08X] r3=0x%llX\n",
+                    target, ctx->cia, (uint32_t)ctx->lr, (uint32_t)ctx->gpr[1],
+                    opd_func, opd_toc, (unsigned long long)ctx->gpr[3]);
+            fflush(stderr);
             s_miss_count++;
         }
         ctx->gpr[3] = 0;  /* Return CELL_OK for unresolvable targets */
