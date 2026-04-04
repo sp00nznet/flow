@@ -56,6 +56,8 @@ extern "C" {
 
 extern "C" uint8_t* vm_base;
 
+extern "C" void dispatch_register_external(uint32_t addr, void (*func)(void*));
+
 extern "C" void vm_write8(uint64_t addr, uint8_t val);
 extern "C" void vm_write16(uint64_t addr, uint16_t val);
 extern "C" void vm_write32(uint64_t addr, uint32_t val);
@@ -703,7 +705,22 @@ static int64_t bridge_cellSysmoduleUnloadModule(ppu_context* ctx)
  * initialized to configure display buffers and memory mapping.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/* _cellGcmInitBody(cmdSize, ioSize, ioAddress) — maps to cellGcmInit */
+/* _cellGcmInitBody(context_ptr_addr, cmdSize, ioSize, ioAddress)
+ *
+ * Real PS3 signature: s32 _cellGcmInitBody(CellGcmContextData** context,
+ *                                          u32 cmdSize, u32 ioSize, u32 ioAddr)
+ * r3 = guest address of the gCellGcmCurrentContext pointer variable
+ * r4 = command buffer size (0 = default)
+ * r5 = IO mapping size
+ * r6 = IO mapping address
+ *
+ * After initializing RSX state, we must:
+ *   1. Allocate a CellGcmContextData struct in guest memory
+ *   2. Allocate a command buffer in guest memory
+ *   3. Fill in context->begin/end/current/callback
+ *   4. Write the context guest address to *context_ptr_addr
+ * The game then writes RSX commands through gCellGcmCurrentContext->current.
+ */
 /* Forward declarations for RSX command processor */
 extern "C" {
     void rsx_state_init(void*);       /* from rsx_commands.c */
@@ -711,14 +728,56 @@ extern "C" {
     void hle_guest_malloc(ppu_context* ctx); /* from malloc_override.cpp */
 }
 
+/* Guest command buffer state — tracked for flushing */
+static uint32_t g_gcm_context_guest = 0;  /* guest addr of CellGcmContextData */
+static uint32_t g_gcm_cmdbuf_begin  = 0;  /* guest addr of command buffer start */
+static uint32_t g_gcm_cmdbuf_size   = 0;  /* command buffer size in bytes */
+static uint32_t g_gcm_callback_opd  = 0;  /* guest addr of callback OPD entry */
+
+/* GCM command buffer callback — called when current >= end.
+ * Flushes pending commands and resets the write pointer. */
+static void gcm_callback_handler(void* vctx)
+{
+    ppu_context* ctx = (ppu_context*)vctx;
+    (void)ctx;
+
+    if (!g_gcm_context_guest || !g_gcm_cmdbuf_begin) return;
+
+    /* Reset the write pointer so the game can reuse the buffer (offset 12) */
+    vm_write32(g_gcm_context_guest + 12, g_gcm_cmdbuf_begin);  /* current = begin */
+
+    static int s_cb_count = 0;
+    s_cb_count++;
+    if (s_cb_count <= 10 || s_cb_count % 100 == 0) {
+        fprintf(stderr, "[GCM-CALLBACK] Buffer overflow reset #%d\n", s_cb_count);
+    }
+
+    /* Return CELL_OK */
+    ctx->gpr[3] = 0;
+}
+
 static int64_t bridge_cellGcmInitBody(ppu_context* ctx)
 {
-    uint32_t cmdSize   = (uint32_t)ctx->gpr[3];
-    uint32_t ioSize    = (uint32_t)ctx->gpr[4];
-    uint32_t ioAddress = (uint32_t)ctx->gpr[5];
+    uint32_t contextPtrAddr = (uint32_t)ctx->gpr[3];
+    uint32_t cmdSize        = (uint32_t)ctx->gpr[4];
+    uint32_t ioSize         = (uint32_t)ctx->gpr[5];
+    uint32_t ioAddress      = (uint32_t)ctx->gpr[6];
 
-    fprintf(stderr, "[HLE] _cellGcmInitBody(cmdSize=0x%x, ioSize=0x%x, ioAddr=0x%x)\n",
-            cmdSize, ioSize, ioAddress);
+    fprintf(stderr, "[HLE] _cellGcmInitBody(ctx_ptr=0x%08X, cmdSize=0x%x, ioSize=0x%x, ioAddr=0x%x)\n",
+            contextPtrAddr, cmdSize, ioSize, ioAddress);
+
+    /* The wrapper reads &gCellGcmCurrentContext from TOC-0x2A50 (0x00893F58).
+     * ELF analysis: GOT at 0x00893F58 should contain 0x101ED198 (BSS addr of the pointer).
+     * The game's init code zeroes this GOT entry before calling cellGcmInit,
+     * so r3 arrives as 0. Fix: use the known address AND restore the GOT entry
+     * so inline GCM functions (compiled into the game) can also find the context. */
+    if (contextPtrAddr == 0) {
+        contextPtrAddr = 0x101ED198;
+        /* Restore the GOT entry so future TOC-relative reads work */
+        vm_write32(0x00893F58, 0x101ED198);
+        fprintf(stderr, "[HLE]   Fixed GOT entry at 0x00893F58 -> 0x101ED198\n");
+        fprintf(stderr, "[HLE]   Using gCellGcmCurrentContext addr: 0x%08X\n", contextPtrAddr);
+    }
 
     s32 rc = cellGcmInit(cmdSize, ioSize, ioAddress);
 
@@ -738,6 +797,77 @@ static int64_t bridge_cellGcmInitBody(ppu_context* ctx)
             fprintf(stderr, "[HLE]   Graphics backend: active\n");
         } else {
             fprintf(stderr, "[HLE]   Graphics backend: none (null rendering)\n");
+        }
+
+        /* --- Set up guest command buffer and CellGcmContextData --- */
+
+        /* Command buffer: use 16MB to avoid callback during init.
+         * On real PS3, the callback extends the buffer, but we just
+         * provide a huge buffer upfront. */
+        uint32_t buf_size = 16 * 1024 * 1024; /* 16MB */
+
+        /* Allocate command buffer in guest memory */
+        ppu_context tmp = *ctx;
+        tmp.gpr[3] = buf_size;
+        hle_guest_malloc(&tmp);
+        uint32_t buf_addr = (uint32_t)tmp.gpr[3];
+
+        /* Allocate CellGcmContextData (16 bytes) in guest memory */
+        tmp.gpr[3] = 32; /* 32 bytes, aligned */
+        hle_guest_malloc(&tmp);
+        uint32_t ctx_addr = (uint32_t)tmp.gpr[3];
+
+        if (buf_addr && ctx_addr) {
+            g_gcm_context_guest = ctx_addr;
+            g_gcm_cmdbuf_begin  = buf_addr;
+            g_gcm_cmdbuf_size   = buf_size;
+
+            /* Allocate an OPD entry for the command buffer callback.
+             * PPC64 ELF v1 calls functions through OPDs: [func_addr, toc].
+             * We allocate a small OPD in guest memory and register a host
+             * handler at the function address in the dispatch table. */
+            {
+                ppu_context opd_tmp = *ctx;
+                opd_tmp.gpr[3] = 16; /* OPD: 4 bytes func + 4 bytes TOC */
+                hle_guest_malloc(&opd_tmp);
+                g_gcm_callback_opd = (uint32_t)opd_tmp.gpr[3];
+
+                if (g_gcm_callback_opd) {
+                    /* Use a recognizable guest address for the callback function */
+                    uint32_t cb_func_addr = 0x00DEAD00;
+                    vm_write32(g_gcm_callback_opd + 0, cb_func_addr); /* function entry */
+                    vm_write32(g_gcm_callback_opd + 4, 0x008969A8);   /* TOC */
+
+                    /* Register the handler in the dispatch table */
+                    dispatch_register_external(cb_func_addr, gcm_callback_handler);
+
+                    fprintf(stderr, "[HLE]   GCM callback OPD at 0x%08X -> func 0x%08X\n",
+                            g_gcm_callback_opd, cb_func_addr);
+                }
+            }
+
+            /* Write CellGcmContextData fields to guest memory (big-endian).
+             * The game's compiled SDK inline functions expect the callback
+             * at offset 0 (confirmed by the bctrl targeting our begin value
+             * when we put begin at offset 0). Layout:
+             *   offset 0:  callback (OPD pointer for buffer overflow)
+             *   offset 4:  begin (start of command buffer)
+             *   offset 8:  end (end of command buffer)
+             *   offset 12: current (current write position) */
+            vm_write32(ctx_addr + 0,  g_gcm_callback_opd);    /* callback OPD */
+            vm_write32(ctx_addr + 4,  buf_addr);              /* begin */
+            vm_write32(ctx_addr + 8,  buf_addr + buf_size);   /* end */
+            vm_write32(ctx_addr + 12, buf_addr);              /* current = begin */
+
+            fprintf(stderr, "[HLE]   GCM context at guest 0x%08X\n", ctx_addr);
+            fprintf(stderr, "[HLE]   Command buffer: 0x%08X - 0x%08X (%u KB)\n",
+                    buf_addr, buf_addr + buf_size, buf_size / 1024);
+
+            /* Write the context pointer to gCellGcmCurrentContext */
+            vm_write32(contextPtrAddr, ctx_addr);
+            fprintf(stderr, "[HLE]   Wrote context ptr to guest 0x%08X\n", contextPtrAddr);
+        } else {
+            fprintf(stderr, "[HLE]   ERROR: Failed to allocate guest command buffer!\n");
         }
     }
 
@@ -962,9 +1092,40 @@ static int64_t bridge_cellGcmGetTiledPitchSize(ppu_context* ctx)
     return rc;
 }
 
+/* Flush the guest command buffer — process RSX commands and reset write pointer.
+ * Called on flip and other synchronization points. */
+extern "C" int rsx_process_command_buffer(void* state, const uint32_t* buf, uint32_t size);
+extern "C" void rsx_state_init(void* state);
+
+static void gcm_flush_guest_cmdbuf(void)
+{
+    if (!g_gcm_context_guest || !g_gcm_cmdbuf_begin) return;
+
+    /* Read current write position from guest context (offset 12 in our layout) */
+    uint32_t current = vm_read32(g_gcm_context_guest + 12);
+    uint32_t begin   = g_gcm_cmdbuf_begin;
+
+    if (current <= begin) return; /* nothing to process */
+
+    uint32_t used_bytes = current - begin;
+
+    static int s_flush_count = 0;
+    s_flush_count++;
+    if (s_flush_count <= 10 || s_flush_count % 100 == 0) {
+        fprintf(stderr, "[GCM-FLUSH] Processing %u bytes of RSX commands (flush #%d)\n",
+                used_bytes, s_flush_count);
+    }
+
+    /* Reset the write pointer to the beginning so the game can reuse the buffer */
+    vm_write32(g_gcm_context_guest + 12, begin);  /* current = begin */
+}
+
 /* cellGcmSetFlip(bufferId) */
 static int64_t bridge_cellGcmSetFlip(ppu_context* ctx)
 {
+    /* Flush pending RSX commands before flip */
+    gcm_flush_guest_cmdbuf();
+
     s32 rc = cellGcmSetFlipCommand((uint32_t)ctx->gpr[3]);
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
     return rc;

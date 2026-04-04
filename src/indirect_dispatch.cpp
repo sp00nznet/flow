@@ -77,6 +77,9 @@ static void stub_00100B64(void* vctx) {
 
 extern uint32_t vm_read32(uint64_t addr);
 
+/* Public version for use from other translation units */
+extern "C" void dispatch_register_external(uint32_t addr, void (*func)(void*));
+
 static void dispatch_register(uint32_t addr, void (*func)(void*))
 {
     uint32_t h = hash_addr(addr) & DISPATCH_HASH_MASK;
@@ -98,6 +101,15 @@ static void dispatch_register(uint32_t addr, void (*func)(void*))
         }
     }
     fprintf(stderr, "[dispatch] FAILED to register 0x%08X — table full!\n", addr);
+}
+
+extern "C" void dispatch_register_external(uint32_t addr, void (*func)(void*))
+{
+    if (!s_dispatch_initialized) {
+        /* Defer — will be picked up when dispatch_init runs.
+         * For now, just force init. */
+    }
+    dispatch_register(addr, func);
 }
 
 static void dispatch_init(void)
