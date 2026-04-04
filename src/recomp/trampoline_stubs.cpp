@@ -50,13 +50,14 @@ STUB_FUNC(func_000BC880)
 STUB_FUNC(func_000BCBD4)
 STUB_FUNC(func_000BD360)
 STUB_FUNC(func_000BD364)
-STUB_FUNC(func_000CC5A8)
-STUB_FUNC(func_000CC5B4)
-STUB_FUNC(func_000CC5C0)
-STUB_FUNC(func_000CC6F4)
-STUB_FUNC(func_000CC704)
-STUB_FUNC(func_000CC710)
-STUB_FUNC(func_000CC790)
+/* Game main init path stubs — log which path is taken */
+void func_000CC5A8(ppu_context* ctx) { fprintf(stderr, "[INIT-PATH] func_000CC5A8 (VideoOutGetState error path) r3=0x%llX\n", (unsigned long long)ctx->gpr[3]); fflush(stderr); }
+void func_000CC5B4(ppu_context* ctx) { fprintf(stderr, "[INIT-PATH] func_000CC5B4 (VideoOutGetResolution error path) r3=0x%llX\n", (unsigned long long)ctx->gpr[3]); fflush(stderr); }
+void func_000CC5C0(ppu_context* ctx) { fprintf(stderr, "[INIT-PATH] func_000CC5C0 (colorSpace/format check) r3=0x%llX r30=0x%llX\n", (unsigned long long)ctx->gpr[3], (unsigned long long)ctx->gpr[30]); fflush(stderr); }
+void func_000CC6F4(ppu_context* ctx) { fprintf(stderr, "[INIT-PATH] func_000CC6F4 (VideoOutConfigure error path) r3=0x%llX\n", (unsigned long long)ctx->gpr[3]); fflush(stderr); }
+void func_000CC704(ppu_context* ctx) { fprintf(stderr, "[INIT-PATH] func_000CC704 r3=0x%llX\n", (unsigned long long)ctx->gpr[3]); fflush(stderr); }
+void func_000CC710(ppu_context* ctx) { fprintf(stderr, "[INIT-PATH] func_000CC710 r3=0x%llX\n", (unsigned long long)ctx->gpr[3]); fflush(stderr); }
+void func_000CC790(ppu_context* ctx) { fprintf(stderr, "[INIT-PATH] func_000CC790 r3=0x%llX r30=0x%llX\n", (unsigned long long)ctx->gpr[3], (unsigned long long)ctx->gpr[30]); fflush(stderr); }
 STUB_FUNC(func_000ECEC0)
 STUB_FUNC(func_000FC5F4)
 STUB_FUNC(func_000FC8F4)

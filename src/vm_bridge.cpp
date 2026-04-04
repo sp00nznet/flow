@@ -65,7 +65,15 @@ extern "C" {
 
 uint8_t vm_read8(uint64_t addr) {
     seq_flush();
-    return *translate(addr);
+    uint8_t val = *translate(addr);
+
+    /* PhyreEngine init flag — game checks this byte and exits if 0.
+     * Force it to return 1 regardless of what was written there. */
+    if (val == 0 && (uint32_t)addr == 0x10164D24) {
+        return 1;
+    }
+
+    return val;
 }
 
 uint16_t vm_read16(uint64_t addr) {
@@ -75,11 +83,46 @@ uint16_t vm_read16(uint64_t addr) {
     return bswap16(raw);
 }
 
+/* ELF GOT snapshot — populated from the ELF data segment at startup.
+ * When game code zeroes GOT entries, we return the original values. */
+static uint8_t* s_elf_got_snapshot = nullptr;
+static uint32_t s_got_region_start = 0x00891000;
+static uint32_t s_got_region_end   = 0x00896000;
+
+extern "C" void vm_got_snapshot_init(void) {
+    if (s_elf_got_snapshot) return;
+    uint32_t size = s_got_region_end - s_got_region_start;
+    s_elf_got_snapshot = (uint8_t*)malloc(size);
+    if (s_elf_got_snapshot && vm_base) {
+        memcpy(s_elf_got_snapshot, vm_base + s_got_region_start, size);
+        fprintf(stderr, "[GOT] Snapshot %u bytes from 0x%08X-0x%08X\n",
+                size, s_got_region_start, s_got_region_end);
+    }
+}
+
 uint32_t vm_read32(uint64_t addr) {
     seq_flush();
     uint32_t raw;
     memcpy(&raw, translate(addr), 4);
-    return bswap32(raw);
+    uint32_t val = bswap32(raw);
+
+    /* Fix zeroed GOT entries — game init code zeros TOC-relative data.
+     * When a read from the GOT region returns 0, check if the ELF snapshot
+     * had a non-zero value there and return that instead. */
+    if (val == 0 && s_elf_got_snapshot) {
+        uint32_t a = (uint32_t)addr;
+        if (a >= s_got_region_start && a < s_got_region_end) {
+            uint32_t off = a - s_got_region_start;
+            uint32_t snap_raw;
+            memcpy(&snap_raw, s_elf_got_snapshot + off, 4);
+            uint32_t snap_val = bswap32(snap_raw);
+            if (snap_val != 0) {
+                return snap_val;
+            }
+        }
+    }
+
+    return val;
 }
 
 uint64_t vm_read64(uint64_t addr) {

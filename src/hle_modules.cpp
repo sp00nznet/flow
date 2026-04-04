@@ -521,6 +521,26 @@ static int64_t bridge_cellSysutilUnregisterCallback(ppu_context* ctx)
 /* cellSysutilCheckCallback() */
 static int64_t bridge_cellSysutilCheckCallback(ppu_context* ctx)
 {
+    /* Fix zeroed GOT entries — game init code zeros TOC-relative GOT entries.
+     * TOC-0x54FC (0x008914AC) should point to the PhyreEngine init flag at 0x10164D24.
+     * The game checks this flag byte: 0 = not initialized (exit), non-zero = continue. */
+    {
+        uint32_t got_54fc = vm_read32(0x008914AC);
+        if (got_54fc == 0) {
+            /* Restore from ELF analysis */
+            vm_write32(0x008914AC, 0x10164D24);
+            got_54fc = 0x10164D24;
+            fprintf(stderr, "[HLE] Fixed zeroed GOT at TOC-0x54FC -> 0x10164D24\n");
+        }
+        /* Ensure the init flag is non-zero so game continues */
+        uint8_t flag_val = vm_read8(got_54fc);
+        if (flag_val == 0) {
+            vm_write8(got_54fc, 1);
+            fprintf(stderr, "[HLE] Forced init flag at 0x%08X to 1\n", got_54fc);
+        }
+        fflush(stderr);
+    }
+
     s32 rc = cellSysutilCheckCallback();
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
     return rc;
@@ -572,6 +592,9 @@ static int64_t bridge_cellVideoOutGetState(ppu_context* ctx)
 
     CellVideoOutState host_state;
     s32 rc = cellVideoOutGetState(videoOut, deviceIndex, &host_state);
+
+    fprintf(stderr, "[HLE] cellVideoOutGetState(out=%u, dev=%u) rc=0x%X state=%u colorSpace=%u displayMode=0x%X\n",
+            videoOut, deviceIndex, rc, host_state.state, host_state.colorSpace, host_state.displayMode);
 
     if (rc == CELL_OK && state_addr) {
         /* Write struct to guest in big-endian */
