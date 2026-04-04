@@ -156,6 +156,21 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ep) {
             }
         }
 
+        /* Edge case: access at vm_base + 0x100000000 (exactly 4GB boundary).
+         * This happens when game code uses 0xFFFFFFFF as a guest address
+         * (usually a -1 error return used as a pointer). Commit a guard page
+         * just past the VM range so the read returns 0 instead of crashing. */
+        if (vm_base && addr >= base + 0x100000000ULL && addr < base + 0x100010000ULL) {
+            uintptr_t page_base = addr & ~0xFFFULL;
+            void* result = VirtualAlloc((void*)page_base, 0x10000,
+                                        MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            if (result) {
+                fprintf(stderr, "[VM-GUARD] Committed guard page at 4GB boundary (guest addr ~0xFFFFFFFF)\n");
+                fflush(stderr);
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+        }
+
         /* Not in VM range or commit failed — log and propagate */
         int is_write = (int)ep->ExceptionRecord->ExceptionInformation[0];
         int in_vm = (vm_base && addr >= base && addr < base + 0x100000000ULL);
@@ -173,6 +188,15 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ep) {
                     is_write ? "WRITE" : "READ", (void*)addr,
                     (void*)ep->ContextRecord->Rip,
                     (unsigned long long)(ep->ContextRecord->Rip - exe_base));
+            /* Log x86 registers to help identify the crashing code */
+            fprintf(stderr, "[CRASH-VEH] RAX=%p RCX=%p RDX=%p RBX=%p\n",
+                    (void*)ep->ContextRecord->Rax, (void*)ep->ContextRecord->Rcx,
+                    (void*)ep->ContextRecord->Rdx, (void*)ep->ContextRecord->Rbx);
+            fprintf(stderr, "[CRASH-VEH] RSI=%p RDI=%p R8=%p R9=%p\n",
+                    (void*)ep->ContextRecord->Rsi, (void*)ep->ContextRecord->Rdi,
+                    (void*)ep->ContextRecord->R8, (void*)ep->ContextRecord->R9);
+            fprintf(stderr, "[CRASH-VEH] vm_base=%p  crash_addr-vm_base=%lld\n",
+                    (void*)vm_base, (long long)((intptr_t)addr - (intptr_t)vm_base));
         }
         fflush(stderr);
     }
