@@ -1,0 +1,54 @@
+[
+  {
+    "start": "0x000CC064",
+    "end": "0x000CC0B8"
+  },
+  {
+    "start": "0x000CC0B8",
+    "end": "0x000CC170"
+  },
+  {
+    "start": "0x000CC170",
+    "end": "0x000CC184"
+  },
+  {
+    "start": "0x000CC184",
+    "end": "0x000CC3E8"
+  },
+  {
+    "start": "0x000CC3E8",
+    "end": "0x000CC468"
+  },
+  {
+    "start": "0x000CC468",
+    "end": "0x000CC5A8"
+  },
+  {
+    "start": "0x000CC5A8",
+    "end": "0x000CC5B4"
+  },
+  {
+    "start": "0x000CC5B4",
+    "end": "0x000CC5C0"
+  },
+  {
+    "start": "0x000CC5C0",
+    "end": "0x000CC6F4"
+  },
+  {
+    "start": "0x000CC6F4",
+    "end": "0x000CC704"
+  },
+  {
+    "start": "0x000CC704",
+    "end": "0x000CC710"
+  },
+  {
+    "start": "0x000CC710",
+    "end": "0x000CC790"
+  },
+  {
+    "start": "0x000CC790",
+    "end": "0x000CC7AC"
+  }
+]
