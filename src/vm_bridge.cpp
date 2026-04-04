@@ -51,6 +51,13 @@ static uint32_t s_seq_count = 0;
 
 static void seq_flush(void) {
     if (s_seq_count > 0) {
+        /* Check if this memset covers the r31 stack save */
+        uint32_t end = s_seq_addr + s_seq_count;
+        if (s_seq_val == 0 && s_seq_addr <= 0xD8000F38 && end > 0xD8000F38) {
+            fprintf(stderr, "[STACK-MEMSET] seq_flush: memset(0x%08X, 0, %u) covers r31 save at 0xD8000F38!\n",
+                    s_seq_addr, s_seq_count);
+            fflush(stderr);
+        }
         memset(vm_base + s_seq_addr, s_seq_val, s_seq_count);
         if (s_seq_count > 1000000) {
             fprintf(stderr, "[vm_write8] bulk memset: 0x%08X, %u bytes (%.1f MB)\n",
@@ -158,12 +165,24 @@ void vm_write16(uint64_t addr, uint16_t val) {
 
 void vm_write32(uint64_t addr, uint32_t val) {
     seq_flush();
+    uint32_t a = (uint32_t)addr;
+    if ((a == 0xD8000F38 || a == 0xD8000F3C) && val == 0) {
+        fprintf(stderr, "[STACK-TRAP32] vm_write32(0x%08X, 0)\n", a);
+        fflush(stderr);
+    }
     uint32_t raw = bswap32(val);
     memcpy(translate(addr), &raw, 4);
 }
 
 void vm_write64(uint64_t addr, uint64_t val) {
     seq_flush();
+    /* Trap writes that clobber the r31 save slot on the stack */
+    uint32_t a = (uint32_t)addr;
+    if ((a == 0xD8000F38 || a == 0xD8000F34 || a == 0xD8000F30) && val == 0) {
+        fprintf(stderr, "[STACK-TRAP] vm_write64(0x%08X, 0x%llX) — clobbering r31 save!\n",
+                a, (unsigned long long)val);
+        fflush(stderr);
+    }
     uint64_t raw = bswap64(val);
     memcpy(translate(addr), &raw, 8);
 }
