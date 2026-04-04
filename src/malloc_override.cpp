@@ -71,6 +71,11 @@ static void hle_realloc(ppu_context* ctx)
 /* Reset heap state — called on CRT abort redirect to discard CRT allocations */
 extern "C" void hle_guest_malloc_reset(void)
 {
+    static int s_reset_count = 0;
+    s_reset_count++;
+    fprintf(stderr, "[MALLOC-RESET] #%d heap ptr=0x%08X allocs=%u\n",
+            s_reset_count, g_heap_ptr, g_alloc_count);
+    fflush(stderr);
     /* Zero the heap region to clear stale data from previous passes */
     if (vm_base)
         memset(vm_base + 0x00A00000, 0, g_heap_end - 0x00A00000);

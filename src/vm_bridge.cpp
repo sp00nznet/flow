@@ -51,10 +51,10 @@ static uint32_t s_seq_count = 0;
 
 static void seq_flush(void) {
     if (s_seq_count > 0) {
-        /* Check if this memset covers the r31 stack save */
+        /* Check if this memset covers the engine vtable at 0xA000C0 */
         uint32_t end = s_seq_addr + s_seq_count;
-        if (s_seq_val == 0 && s_seq_addr <= 0xD8000F38 && end > 0xD8000F38) {
-            fprintf(stderr, "[STACK-MEMSET] seq_flush: memset(0x%08X, 0, %u) covers r31 save at 0xD8000F38!\n",
+        if (s_seq_val == 0 && s_seq_addr <= 0x00A000C0 && end > 0x00A000C0) {
+            fprintf(stderr, "[VTABLE-MEMSET] seq_flush: memset(0x%08X, 0, %u) covers vtable at 0xA000C0!\n",
                     s_seq_addr, s_seq_count);
             fflush(stderr);
         }
@@ -113,6 +113,26 @@ uint32_t vm_read32(uint64_t addr) {
     memcpy(&raw, translate(addr), 4);
     uint32_t val = bswap32(raw);
 
+    /* Engine vtable protection: game writes vtable pointer via vm_write32
+     * but an untracked HOST memset zeros it. Cache the last non-zero value
+     * written to the engine object's vtable slot and return it on read. */
+    {
+        static uint32_t s_engine_vtable = 0;
+        uint32_t a = (uint32_t)addr;
+        if (a == 0x00A000C0) {
+            if (val == 0 && s_engine_vtable != 0) {
+                static int s_fix_count = 0;
+                if (++s_fix_count <= 5)
+                    fprintf(stderr, "[VTABLE-CACHE] Returning cached 0x%08X for 0xA000C0 (raw was 0)\n", s_engine_vtable);
+                return s_engine_vtable;
+            }
+            if (val != 0) {
+                s_engine_vtable = val;
+                fprintf(stderr, "[VTABLE-CACHE] Cached vtable 0x%08X from read at 0xA000C0\n", val);
+            }
+        }
+    }
+
     /* Fix zeroed GOT entries — game init code zeros TOC-relative data.
      * When a read from the GOT region returns 0, check if the ELF snapshot
      * had a non-zero value there and return that instead. */
@@ -166,8 +186,9 @@ void vm_write16(uint64_t addr, uint16_t val) {
 void vm_write32(uint64_t addr, uint32_t val) {
     seq_flush();
     uint32_t a = (uint32_t)addr;
-    if ((a == 0xD8000F38 || a == 0xD8000F3C) && val == 0) {
-        fprintf(stderr, "[STACK-TRAP32] vm_write32(0x%08X, 0)\n", a);
+    /* Trap writes that zero the engine vtable pointer */
+    if (a == 0x00A000C0 && val == 0) {
+        fprintf(stderr, "[VTABLE-ZERO] vm_write32(0x00A000C0, 0) — vtable being zeroed!\n");
         fflush(stderr);
     }
     uint32_t raw = bswap32(val);
@@ -176,11 +197,10 @@ void vm_write32(uint64_t addr, uint32_t val) {
 
 void vm_write64(uint64_t addr, uint64_t val) {
     seq_flush();
-    /* Trap writes that clobber the r31 save slot on the stack */
     uint32_t a = (uint32_t)addr;
-    if ((a == 0xD8000F38 || a == 0xD8000F34 || a == 0xD8000F30) && val == 0) {
-        fprintf(stderr, "[STACK-TRAP] vm_write64(0x%08X, 0x%llX) — clobbering r31 save!\n",
-                a, (unsigned long long)val);
+    /* Trap writes that zero the engine vtable at 0xA000C0 (8-byte write covering it) */
+    if (a <= 0x00A000C0 && a + 8 > 0x00A000C0 && val == 0) {
+        fprintf(stderr, "[VTABLE-ZERO64] vm_write64(0x%08X, 0) — covers vtable!\n", a);
         fflush(stderr);
     }
     uint64_t raw = bswap64(val);
