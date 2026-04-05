@@ -106,8 +106,10 @@ static int s_snapshot_count = 0;
 extern "C" void vm_got_snapshot_init(void) {
     if (s_snapshot_count > 0) return;
 
-    /* Snapshot 1: GOT/TOC region (segment 1 data, 0x891000-0x896000) */
-    s_snapshots[0] = { nullptr, 0x00891000, 0x00896000 };
+    /* Snapshot 1: Segment 1 data — GOT, OPDs, and other writable data.
+     * Covers 0x820000-0x896000 (entire segment 1 file-backed region).
+     * Game init code zeros large portions of this during execution. */
+    s_snapshots[0] = { nullptr, 0x00820000, 0x00896000 };
     /* Snapshot 2: Segment 3 file-backed data (vtables, rodata, 0x10040000-0x10112000) */
     s_snapshots[1] = { nullptr, 0x10040000, 0x10112000 };
 

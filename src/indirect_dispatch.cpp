@@ -231,11 +231,35 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
 
             func = dispatch_lookup(opd_func);
             if (func) {
-                /* Update TOC to the OPD's TOC value.
-                 * Don't overwrite with 0 — preserve caller's TOC. */
                 if (opd_toc != 0)
                     ctx->gpr[2] = opd_toc;
                 target = opd_func;
+            }
+
+            /* Multi-level OPD resolution for C++ virtual method calls.
+             * When CTR points to a C++ object, the chain is:
+             *   L1: *(object) = vtable pointer
+             *   L2: *(vtable + 0) = first method OPD
+             *   L3: *(OPD) = function address
+             * Try up to 3 levels of dereference to find a known function. */
+            for (int level = 2; !func && level <= 3; level++) {
+                uint32_t next = vm_read32(opd_func);
+                if (target == 0x00A000C0) {
+                    fprintf(stderr, "[DISPATCH-ML] L%d: *(0x%08X) = 0x%08X lookup=%s\n",
+                            level, opd_func, next,
+                            dispatch_lookup(next) ? "HIT" : "MISS");
+                    fflush(stderr);
+                }
+                if (next == 0 || next >= 0x20000000) break;
+                func = dispatch_lookup(next);
+                if (func) {
+                    uint32_t next_toc = vm_read32(opd_func + 4);
+                    if (next_toc != 0)
+                        ctx->gpr[2] = next_toc;
+                    target = next;
+                } else {
+                    opd_func = next;
+                }
             }
         }
     }
