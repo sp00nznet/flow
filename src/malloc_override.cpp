@@ -38,7 +38,8 @@ void hle_guest_malloc(ppu_context* ctx)
     memset(vm_base + ptr, 0, size);
     ctx->gpr[3] = ptr;
 
-    if (g_alloc_count <= 30 || ptr == 0x00A000C0)
+    if (g_alloc_count <= 30 || ptr == 0x00A000C0 ||
+        (ptr <= 0x01800000 && ptr + size > 0x01800000))
         fprintf(stderr, "[malloc] %u -> 0x%08X (%u allocs)\n", size, ptr, g_alloc_count);
 }
 
