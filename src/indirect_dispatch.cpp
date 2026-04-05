@@ -387,9 +387,10 @@ done_dispatch: ;
                 opd_func = vm_read32(target);
                 opd_toc  = vm_read32(target + 4);
             }
-            fprintf(stderr, "[dispatch] MISS: bctrl -> 0x%08X (CIA=0x%08X LR=0x%08X SP=0x%08X) OPD=[0x%08X, 0x%08X] r3=0x%llX\n",
-                    target, ctx->cia, (uint32_t)ctx->lr, (uint32_t)ctx->gpr[1],
-                    opd_func, opd_toc, (unsigned long long)ctx->gpr[3]);
+            fprintf(stderr, "[dispatch] MISS: bctrl -> 0x%08X (SP=0x%08X) OPD=[0x%08X, 0x%08X] r3=0x%llX r9=0x%llX r11=0x%llX\n",
+                    target, (uint32_t)ctx->gpr[1],
+                    opd_func, opd_toc, (unsigned long long)ctx->gpr[3],
+                    (unsigned long long)ctx->gpr[9], (unsigned long long)ctx->gpr[11]);
             fflush(stderr);
             s_miss_count++;
         }

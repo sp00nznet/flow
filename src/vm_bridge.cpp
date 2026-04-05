@@ -92,19 +92,35 @@ uint16_t vm_read16(uint64_t addr) {
 
 /* ELF GOT snapshot — populated from the ELF data segment at startup.
  * When game code zeroes GOT entries, we return the original values. */
-static uint8_t* s_elf_got_snapshot = nullptr;
-static uint32_t s_got_region_start = 0x00891000;
-static uint32_t s_got_region_end   = 0x00896000;
+/* ELF data snapshots — regions that get zeroed by game code during init.
+ * We snapshot after constructors and return original values on read. */
+struct elf_snapshot {
+    uint8_t* data;
+    uint32_t start;
+    uint32_t end;
+};
+
+static elf_snapshot s_snapshots[3] = {};
+static int s_snapshot_count = 0;
 
 extern "C" void vm_got_snapshot_init(void) {
-    if (s_elf_got_snapshot) return;
-    uint32_t size = s_got_region_end - s_got_region_start;
-    s_elf_got_snapshot = (uint8_t*)malloc(size);
-    if (s_elf_got_snapshot && vm_base) {
-        memcpy(s_elf_got_snapshot, vm_base + s_got_region_start, size);
-        fprintf(stderr, "[GOT] Snapshot %u bytes from 0x%08X-0x%08X\n",
-                size, s_got_region_start, s_got_region_end);
+    if (s_snapshot_count > 0) return;
+
+    /* Snapshot 1: GOT/TOC region (segment 1 data, 0x891000-0x896000) */
+    s_snapshots[0] = { nullptr, 0x00891000, 0x00896000 };
+    /* Snapshot 2: Segment 3 file-backed data (vtables, rodata, 0x10040000-0x10112000) */
+    s_snapshots[1] = { nullptr, 0x10040000, 0x10112000 };
+
+    for (int i = 0; i < 2; i++) {
+        uint32_t size = s_snapshots[i].end - s_snapshots[i].start;
+        s_snapshots[i].data = (uint8_t*)malloc(size);
+        if (s_snapshots[i].data && vm_base) {
+            memcpy(s_snapshots[i].data, vm_base + s_snapshots[i].start, size);
+            fprintf(stderr, "[SNAPSHOT] %u bytes from 0x%08X-0x%08X\n",
+                    size, s_snapshots[i].start, s_snapshots[i].end);
+        }
     }
+    s_snapshot_count = 2;
 }
 
 uint32_t vm_read32(uint64_t addr) {
@@ -133,18 +149,19 @@ uint32_t vm_read32(uint64_t addr) {
         }
     }
 
-    /* Fix zeroed GOT entries — game init code zeros TOC-relative data.
-     * When a read from the GOT region returns 0, check if the ELF snapshot
-     * had a non-zero value there and return that instead. */
-    if (val == 0 && s_elf_got_snapshot) {
+    /* Fix zeroed ELF data — game init code zeros data segments.
+     * When a read from a snapshotted region returns 0, return the original value. */
+    if (val == 0 && s_snapshot_count > 0) {
         uint32_t a = (uint32_t)addr;
-        if (a >= s_got_region_start && a < s_got_region_end) {
-            uint32_t off = a - s_got_region_start;
-            uint32_t snap_raw;
-            memcpy(&snap_raw, s_elf_got_snapshot + off, 4);
-            uint32_t snap_val = bswap32(snap_raw);
-            if (snap_val != 0) {
-                return snap_val;
+        for (int i = 0; i < s_snapshot_count; i++) {
+            if (s_snapshots[i].data && a >= s_snapshots[i].start && a < s_snapshots[i].end) {
+                uint32_t off = a - s_snapshots[i].start;
+                uint32_t snap_raw;
+                memcpy(&snap_raw, s_snapshots[i].data + off, 4);
+                uint32_t snap_val = bswap32(snap_raw);
+                if (snap_val != 0)
+                    return snap_val;
+                break;
             }
         }
     }

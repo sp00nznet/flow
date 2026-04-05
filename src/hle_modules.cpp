@@ -541,6 +541,32 @@ static int64_t bridge_cellSysutilCheckCallback(ppu_context* ctx)
         fflush(stderr);
     }
 
+    /* Debug: check vtable entries at 0x1006E508 */
+    {
+        uint32_t vt0 = vm_read32(0x1006E508);
+        uint32_t vt1 = vm_read32(0x1006E50C);
+        fprintf(stderr, "[VTABLE-DATA] vtable[0]=0x%08X vtable[1]=0x%08X (expect 0x0084C348, 0x0084C350)\n",
+                vt0, vt1);
+        fflush(stderr);
+    }
+    /* Fix: restore the PhyreEngine vtable if it was zeroed by malloc memset.
+     * The engine at 0xA000C0 should have vtable 0x1006E508 at offset 0
+     * and sub-object vtable 0x1006E548 at offset 0x14. These get zeroed by
+     * hle_guest_malloc's HOST memset during the init chain's allocations. */
+    {
+        uint32_t vt = vm_read32(0xA000C0);
+        if (vt == 0) {
+            uint32_t main_vt = vm_read32(0x891300); /* TOC-0x56A8 */
+            uint32_t sub_vt  = vm_read32(0x891318); /* TOC-0x5690 */
+            if (main_vt != 0) {
+                vm_write32(0xA000C0, main_vt);
+                vm_write32(0xA000D4, sub_vt);
+                fprintf(stderr, "[VTABLE-FIX] Restored engine vtables: main=0x%08X sub=0x%08X\n",
+                        main_vt, sub_vt);
+                fflush(stderr);
+            }
+        }
+    }
     s32 rc = cellSysutilCheckCallback();
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
     return rc;
