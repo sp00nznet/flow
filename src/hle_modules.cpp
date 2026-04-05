@@ -57,6 +57,9 @@ extern "C" {
 extern "C" uint8_t* vm_base;
 
 extern "C" void dispatch_register_external(uint32_t addr, void (*func)(void*));
+extern "C" __declspec(thread) void (*g_trampoline_fn)(void*);
+extern "C" void ps3_indirect_call(ppu_context* ctx);
+extern "C" int rsx_null_backend_pump_messages(void);
 
 extern "C" void vm_write8(uint64_t addr, uint8_t val);
 extern "C" void vm_write16(uint64_t addr, uint16_t val);
@@ -492,6 +495,10 @@ static int64_t bridge_sys_ppu_thread_exit(ppu_context* ctx)
  * cellSysutil — system callbacks and parameters (REAL bridges)
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+/* Registered sysutil callback info */
+static uint32_t g_sysutil_callback_func = 0;
+static uint32_t g_sysutil_callback_userdata = 0;
+
 /* cellSysutilRegisterCallback(slot, func, userdata) */
 static int64_t bridge_cellSysutilRegisterCallback(ppu_context* ctx)
 {
@@ -503,7 +510,12 @@ static int64_t bridge_cellSysutilRegisterCallback(ppu_context* ctx)
     fprintf(stderr, "[HLE] cellSysutilRegisterCallback(slot=%d, func=0x%x, TOC=0x%llX)\n",
             slot, func, (unsigned long long)ctx->gpr[2]);
 
-    /* Call real implementation with cast pointers (it just stores them) */
+    /* Save callback info for dispatch */
+    if (slot == 0) {
+        g_sysutil_callback_func = func;
+        g_sysutil_callback_userdata = userdata;
+    }
+
     s32 rc = cellSysutilRegisterCallback(slot, (CellSysutilCallback)(uintptr_t)func,
                                           (void*)(uintptr_t)userdata);
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
@@ -521,33 +533,34 @@ static int64_t bridge_cellSysutilUnregisterCallback(ppu_context* ctx)
 /* cellSysutilCheckCallback() */
 static int64_t bridge_cellSysutilCheckCallback(ppu_context* ctx)
 {
-    /* Fix zeroed GOT entries — game init code zeros TOC-relative GOT entries.
-     * TOC-0x54FC (0x008914AC) should point to the PhyreEngine init flag at 0x10164D24.
-     * The game checks this flag byte: 0 = not initialized (exit), non-zero = continue. */
+    /* Dispatch the game's registered sysutil callback on first call.
+     * The game loops on cellSysutilCheckCallback waiting for system events.
+     * We fire the callback once to simulate normal system startup. */
+    static int s_check_count = 0;
+    s_check_count++;
+    /* The game polls this in a tight loop. We need to pump the RSX null
+     * backend's Win32 message loop to keep the window responsive, and
+     * also add a small sleep to prevent burning CPU. */
+    {
+        rsx_null_backend_pump_messages();
+        if (s_check_count > 5) {
+#ifdef _WIN32
+            Sleep(1); /* prevent 100% CPU usage in the polling loop */
+#endif
+        }
+    }
+
+    /* Fix zeroed GOT entries */
     {
         uint32_t got_54fc = vm_read32(0x008914AC);
         if (got_54fc == 0) {
-            /* Restore from ELF analysis */
             vm_write32(0x008914AC, 0x10164D24);
             got_54fc = 0x10164D24;
-            fprintf(stderr, "[HLE] Fixed zeroed GOT at TOC-0x54FC -> 0x10164D24\n");
         }
-        /* Ensure the init flag is non-zero so game continues */
         uint8_t flag_val = vm_read8(got_54fc);
         if (flag_val == 0) {
             vm_write8(got_54fc, 1);
-            fprintf(stderr, "[HLE] Forced init flag at 0x%08X to 1\n", got_54fc);
         }
-        fflush(stderr);
-    }
-
-    /* Debug: check vtable entries at 0x1006E508 */
-    {
-        uint32_t vt0 = vm_read32(0x1006E508);
-        uint32_t vt1 = vm_read32(0x1006E50C);
-        fprintf(stderr, "[VTABLE-DATA] vtable[0]=0x%08X vtable[1]=0x%08X (expect 0x0084C348, 0x0084C350)\n",
-                vt0, vt1);
-        fflush(stderr);
     }
     /* Fix: restore the PhyreEngine vtable if it was zeroed by malloc memset.
      * The engine at 0xA000C0 should have vtable 0x1006E508 at offset 0
@@ -635,6 +648,84 @@ static int64_t bridge_cellVideoOutGetState(ppu_context* ctx)
 
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
     return rc;
+}
+
+/* cellHddGameCheck(version, dirName, errDialog, funcStat, container)
+ * On PS3, this checks HDD game data and calls funcStat callback.
+ * The callback sets cbResult->result = CELL_HDDGAME_CBRESULT_OK.
+ * We call the callback immediately with success status. */
+extern "C" void ps3_indirect_call(ppu_context* ctx);
+static int64_t bridge_cellHddGameCheck(ppu_context* ctx)
+{
+    uint32_t version  = (uint32_t)ctx->gpr[3];
+    uint32_t dirName  = (uint32_t)ctx->gpr[4]; /* guest string ptr */
+    uint32_t errDlg   = (uint32_t)ctx->gpr[5];
+    uint32_t funcStat = (uint32_t)ctx->gpr[6]; /* guest OPD for callback */
+    uint32_t container = (uint32_t)ctx->gpr[7];
+
+    fprintf(stderr, "[HLE] cellHddGameCheck(ver=%u, dir=0x%08X, err=%u, func=0x%08X, cont=0x%08X)\n",
+            version, dirName, errDlg, funcStat, container);
+    fflush(stderr);
+
+    if (funcStat != 0) {
+        /* Allocate temporary CellHddGameCBResult on guest stack */
+        uint32_t sp = (uint32_t)ctx->gpr[1];
+        uint32_t cbResult_addr = sp - 0x100;  /* below current stack frame */
+        uint32_t statGet_addr  = sp - 0x200;
+        uint32_t statSet_addr  = sp - 0x300;
+
+        /* Zero the structs */
+        memset(guest_ptr(cbResult_addr), 0, 0x100);
+        memset(guest_ptr(statGet_addr), 0, 0x100);
+        memset(guest_ptr(statSet_addr), 0, 0x100);
+
+        /* CellHddGameCBResult: result at offset 0, errNeedSizeKB at 4, etc.
+         * Set result = CELL_HDDGAME_CBRESULT_OK (0) — already 0 from memset
+         * Set isNewData = 1 (new game, no existing data) */
+        vm_write32(statGet_addr + 0, 1);  /* isNewData = 1 */
+
+        /* Write game dir path into statGet hddDir field (offset 0x18 typically) */
+        const char* game_path = "/dev_hdd0/game/NPUA80001";
+        for (int i = 0; game_path[i] && i < 127; i++)
+            vm_write8(statGet_addr + 0x18 + i, game_path[i]);
+
+        /* Call funcStat(cbResult, statGet, statSet) through dispatch */
+        fprintf(stderr, "[HLE] Calling HddGameCheck callback at OPD 0x%08X\n", funcStat);
+        fflush(stderr);
+
+        /* Save context and call the callback */
+        ppu_context saved = *ctx;
+        ctx->gpr[3] = cbResult_addr;
+        ctx->gpr[4] = statGet_addr;
+        ctx->gpr[5] = statSet_addr;
+
+        /* Read function entry from OPD */
+        uint32_t func_entry = vm_read32(funcStat);
+        uint32_t func_toc   = vm_read32(funcStat + 4);
+        if (func_entry != 0) {
+            ctx->ctr = func_entry;
+            ctx->gpr[2] = func_toc ? func_toc : 0x008969A8;
+            ps3_indirect_call(ctx);
+            /* Drain trampolines */
+            while (g_trampoline_fn) {
+                void(*tf)(void*) = g_trampoline_fn;
+                g_trampoline_fn = nullptr;
+                tf((void*)ctx);
+            }
+        }
+
+        /* Check cbResult->result */
+        uint32_t result = vm_read32(cbResult_addr);
+        fprintf(stderr, "[HLE] HddGameCheck callback returned, cbResult=0x%08X\n", result);
+        fflush(stderr);
+
+        /* Restore context (keep r3 for return) */
+        uint64_t cb_r3 = ctx->gpr[3];
+        *ctx = saved;
+    }
+
+    ctx->gpr[3] = 0; /* CELL_OK */
+    return 0;
 }
 
 /* cellVideoOutGetResolution(resolutionId, resolution_ptr) */
@@ -1572,7 +1663,7 @@ static void register_cellSysutil(void)
     reg_func(&mod_cellSysutil, "cellSaveDataAutoSave",             (void*)hle_stub);
     reg_func(&mod_cellSysutil, "cellSaveDataAutoLoad",             (void*)hle_stub);
     reg_func(&mod_cellSysutil, "cellSaveDataDelete",               (void*)hle_stub);
-    reg_func(&mod_cellSysutil, "cellHddGameCheck",                 (void*)hle_stub);
+    reg_func(&mod_cellSysutil, "cellHddGameCheck",                 (void*)bridge_cellHddGameCheck);
 
     mod_cellSysutil.loaded = true;
     ps3_register_module(&mod_cellSysutil);
