@@ -561,8 +561,10 @@ static int64_t bridge_cellSysutilCheckCallback(ppu_context* ctx)
             if (main_vt != 0) {
                 vm_write32(0xA000C0, main_vt);
                 vm_write32(0xA000D4, sub_vt);
-                fprintf(stderr, "[VTABLE-FIX] Restored engine vtables: main=0x%08X sub=0x%08X\n",
-                        main_vt, sub_vt);
+                /* Also set the engine "initialized" flag at +0x5.
+                 * The engine run function checks this: if 0, skip game loop. */
+                vm_write8(0xA000C5, 1);
+                fprintf(stderr, "[VTABLE-FIX] Restored engine vtables + init flag\n");
                 fflush(stderr);
             }
         }
