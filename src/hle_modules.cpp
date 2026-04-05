@@ -1135,11 +1135,19 @@ static int64_t bridge_cellGcmMapMainMemory(ppu_context* ctx)
     uint32_t size        = (uint32_t)ctx->gpr[4];
     uint32_t offset_addr = (uint32_t)ctx->gpr[5];
 
-    fprintf(stderr, "[HLE] cellGcmMapMainMemory(ea=0x%08X, size=0x%X, offset_ptr=0x%08X)\n",
-            ea, size, offset_addr); fflush(stderr);
+    /* Fix: EA must be 1MB aligned for cellGcmMapMainMemory.
+     * Our bump allocator doesn't align, so round up the EA. */
+    uint32_t aligned_ea = (ea + 0xFFFFF) & ~0xFFFFF;
+    if (aligned_ea != ea) {
+        fprintf(stderr, "[HLE] cellGcmMapMainMemory: aligning EA 0x%08X -> 0x%08X\n", ea, aligned_ea);
+        ea = aligned_ea;
+    }
 
     uint32_t host_offset = 0;
     s32 rc = cellGcmMapMainMemory(ea, size, &host_offset);
+
+    fprintf(stderr, "[HLE] cellGcmMapMainMemory(ea=0x%08X, size=0x%X) -> offset=0x%08X rc=%d\n",
+            ea, size, host_offset, rc); fflush(stderr);
 
     if (rc == CELL_OK && offset_addr)
         vm_write32(offset_addr, host_offset);

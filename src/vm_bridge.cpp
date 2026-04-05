@@ -103,6 +103,10 @@ struct elf_snapshot {
 static elf_snapshot s_snapshots[3] = {};
 static int s_snapshot_count = 0;
 
+/* Exported snapshot references for direct access from recompiled code */
+struct elf_snap_ref { uint8_t* data; uint32_t start; uint32_t end; };
+extern "C" elf_snap_ref g_snap_refs[2] = {};
+
 extern "C" void vm_got_snapshot_init(void) {
     if (s_snapshot_count > 0) return;
 
@@ -123,6 +127,21 @@ extern "C" void vm_got_snapshot_init(void) {
         }
     }
     s_snapshot_count = 2;
+
+    /* Export snapshot references for direct use by recompiled code */
+    for (int i = 0; i < 2; i++) {
+        g_snap_refs[i].data = s_snapshots[i].data;
+        g_snap_refs[i].start = s_snapshots[i].start;
+        g_snap_refs[i].end = s_snapshots[i].end;
+    }
+
+    /* Verify critical GOT entry in snapshot */
+    if (s_snapshots[0].data) {
+        uint32_t off = 0x8914AC - 0x820000;
+        uint32_t raw; memcpy(&raw, s_snapshots[0].data + off, 4);
+        uint32_t val = bswap32(raw);
+        fprintf(stderr, "[SNAPSHOT] Verify 0x8914AC: snapshot=0x%08X (expect 0x10164D24)\n", val);
+    }
 }
 
 uint32_t vm_read32(uint64_t addr) {
@@ -153,6 +172,13 @@ uint32_t vm_read32(uint64_t addr) {
 
     /* Fix zeroed ELF data — game init code zeros data segments.
      * When a read from a snapshotted region returns 0, return the original value. */
+    if ((uint32_t)addr == 0x8914AC && val == 0 && s_snapshot_count > 0) {
+        uint32_t off = 0x8914AC - s_snapshots[0].start;
+        uint32_t snap_raw; memcpy(&snap_raw, s_snapshots[0].data + off, 4);
+        uint32_t snap_val = bswap32(snap_raw);
+        static int _t = 0;
+        if (++_t <= 3) fprintf(stderr, "[READ-8914AC] val=0 snapshot_val=0x%08X (returning it)\n", snap_val);
+    }
     if (val == 0 && s_snapshot_count > 0) {
         uint32_t a = (uint32_t)addr;
         for (int i = 0; i < s_snapshot_count; i++) {
