@@ -61,6 +61,10 @@ extern "C" __declspec(thread) void (*g_trampoline_fn)(void*);
 extern "C" void ps3_indirect_call(ppu_context* ctx);
 extern "C" int rsx_null_backend_pump_messages(void);
 
+/* Snapshot refs for restoring zeroed ELF data (defined in vm_bridge.cpp) */
+struct elf_snap_ref_ext { uint8_t* data; uint32_t start; uint32_t end; };
+extern "C" elf_snap_ref_ext g_snap_refs[2];
+
 extern "C" void vm_write8(uint64_t addr, uint8_t val);
 extern "C" void vm_write16(uint64_t addr, uint16_t val);
 extern "C" void vm_write32(uint64_t addr, uint32_t val);
@@ -550,16 +554,16 @@ static int64_t bridge_cellSysutilCheckCallback(ppu_context* ctx)
         }
     }
 
-    /* Fix zeroed GOT entries */
+    /* Restore ELF snapshots on every CheckCallback call.
+     * The game's init code continuously zeroes GOT entries via fast inline
+     * vm_write8/vm_write32 (which bypass our hooks). Restoring the snapshot
+     * here ensures GOT/OPD data is correct for subsequent code. */
     {
-        uint32_t got_54fc = vm_read32(0x008914AC);
-        if (got_54fc == 0) {
-            vm_write32(0x008914AC, 0x10164D24);
-            got_54fc = 0x10164D24;
-        }
-        uint8_t flag_val = vm_read8(got_54fc);
-        if (flag_val == 0) {
-            vm_write8(got_54fc, 1);
+        /* g_snap_refs declared at file scope */
+        for (int _i = 0; _i < 2; _i++) {
+            if (g_snap_refs[_i].data)
+                memcpy(vm_base + g_snap_refs[_i].start, g_snap_refs[_i].data,
+                       g_snap_refs[_i].end - g_snap_refs[_i].start);
         }
     }
     /* Fix: restore the PhyreEngine vtable if it was zeroed by malloc memset.
