@@ -15,15 +15,15 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | Title | flOw |
 | Title ID | NPUA80001 |
 | Engine | PhyreEngine (Sony) |
-| Functions recompiled | 91,758 (OPD + heuristic + branch target splitting) |
-| Functions lifted to C | 91,758 (100%) |
+| Functions recompiled | 102,056 (OPD + heuristic + branch target splitting + targeted re-lifts) |
+| Functions lifted to C | 102,056 (100%) |
 | Trampoline sites | 22,000 converted fallthroughs, 143,000 drain sites |
 | Imported libraries | 12 |
 | Imported functions | 140/140 resolved (100%) |
 | Binary size | ~10 MB (ELF) → ~45 MB (exe) |
 | HLE bridges | 7/12 real (cellSysutil, cellGcmSys, cellAudio, cellPad, cellFs, cellSysmodule, sysPrxForUser) |
 | Remaining TODOs | ~10,000 (mostly VMX comparison + remaining unrecognized op4) |
-| Indirect calls | 20,030 bctrl sites → hash table dispatch with OPD resolution |
+| Indirect calls | 20,030 bctrl sites → hash table + 3-level OPD dispatch for C++ virtual methods |
 | ps3recomp version | v0.4.0+ |
 | Target | Windows x86-64 (Linux planned) |
 
@@ -41,37 +41,42 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | HLE module registration | **Complete** | 12 modules, 7 with real HLE bridges |
 | CRT startup | **Complete** | TLS → mutexes → malloc → static constructors |
 | CRT abort redirect | **Complete** | longjmp workaround for constructor stack overflows |
-| Game main() | **Running** | Loads 5 modules, registers sysutil callback |
-| Engine init | **Running** | 16+ PhyreEngine constructors executing via bctrl dispatch |
+| Game main() | **Complete** | Loads 7 modules, registers sysutil callback, initializes SPU |
+| GCM / RSX init | **Complete** | Guest command buffer, display buffers, tile/zcull, MapMainMemory |
+| Engine init | **Complete** | PhyreEngine created, 12 subsystems, vtables resolved |
+| Input init | **Complete** | cellPadInit, cellKbInit (×4), cellMouseInit |
+| Engine game loop | **Running** | Enters vtable[3] game loop call, subsystem tick executes |
 | Graphics backend | **Ready** | D3D12 device + PSO + vertex buffer + clear + present |
 | Audio backend | **Wired** | cellAudio → WASAPI via ps3recomp |
 | Input backend | **Wired** | cellPad → XInput via ps3recomp |
-| Full gameplay | In Progress | Debugging memory mapper and dispatch misses |
+| Full gameplay | In Progress | Subsystem tick assertion — engine state partially initialized |
 
 ### What Works Now
 
-- **91,758 functions** recompiled to native C++ with 22K trampoline fallthroughs and 143K drain sites
-- **Game reaches main() initialization** — loads 5 modules (SYSUTIL_NP, SPURS, USBD, JPGDEC, NET), registers sysutil callback
-- **CRT abort redirect via longjmp** — intercepts CRT abort during constructor stack overflows, recovers cleanly into main()
-- **Trampoline system for split-function fallthroughs** — DRAIN_TRAMPOLINE macro after every bl call site handles cross-function fall-through control flow
-- **Manual dispatch stubs** for mid-function entry points that the lifter misses
-- **CRT startup COMPLETE** — TLS init, 6 lwmutex creates, 4 malloc allocations, SEH recovery for 3 crashing constructors
-- **16+ static constructors** executing via indirect call dispatch (PhyreEngine init)
+- **102,056 functions** recompiled to native C++ (base lift + 2 targeted re-lifts for missing fragments)
+- **PhyreEngine fully initialized** — 12 subsystems created with derived vtables, engine object with vtable 0x1006E508
+- **GCM / RSX initialized** — guest command buffer (960KB), display buffers, tile, zcull, MapMainMemory (24MB IO mapping)
+- **Input system initialized** — cellPadInit, cellKbInit (4 code types), cellMouseInit
+- **Game loop virtual call resolves** — engine vtable[3] → func_000CAA08 (subsystem tick)
+- **3-level OPD dispatch** for C++ virtual method calls: object → vtable → method OPD → function
+- **ELF data snapshot system** — protects 1.3MB of zeroed GOT entries, OPDs, and vtables from game init code
+- **CRT abort redirect via longjmp** — intercepts CRT abort, recovers into main()
+- **166 static constructors** executing via indirect call dispatch
 - **VMX/AltiVec** — vector loads, stores, float arithmetic, permute, select, compare all working
 - **7 HLE modules with real bridges** — PPC64 ABI parameter extraction, BE struct output, host OS backends
-- **Module ID mapping fixes** — cellSysmodule correctly resolves module IDs to names
-- **HLE malloc** — bump allocator bypassing CRT's Dinkumware heap (0x00A00000 - 0x10000000)
-- **Indirect call dispatch** — 91,758-entry hash table with OPD resolution for function pointer calls
-- **D3D12 window** — opens on startup, RSX null/D3D12 backend ready for rendering
+- **HLE malloc** — bump allocator bypassing CRT's Dinkumware heap
+- **cellHddGameCheck** with funcStat callback invocation
+- **cellGcmMapMainMemory** with EA alignment fix (1MB boundary)
+- **D3D12 window** — opens on startup with Win32 message pump, RSX null/D3D12 backend ready
 - **Real WASAPI audio**, **XInput gamepad**, **filesystem I/O**, **lightweight mutexes**
-- **LV2 syscall dispatch** with sys_tty_write/read for CRT debug output
-- **~10,000 TODO instructions** remaining (down from 27,000 — VMX coverage at ~80%)
+- **LV2 syscall dispatch** with sys_tty_write/read, event ports, timers
 
 ### Known Issues
 
-- **Split-function backward branch recursion** — Root cause identified: the lifter creates function calls for backward branches that cross split-function boundaries, causing infinite guest stack growth. This is responsible for constructor crashes during CRT init and is the primary remaining lifter bug.
-- **Memory mapper unimplemented** — Game calls syscall 169 (sys_mmapper_allocate_address) after module loading, needs HLE implementation.
-- **Dispatch miss at 0x506BEED1** — Corrupted CTR from bad function pointer chain after module init.
+- **Subsystem tick assertion** — func_000CAA08 (engine vtable[3]) iterates subsystems and calls their tick methods. The first subsystem tick triggers sys_process_exit(1). The engine's internal subsystem array needs proper population from the init chain.
+- **ELF data zeroing** — Game init code zeroes large portions of segment 1 (GOT, OPDs) and segment 3 (vtables) via fast inline vm_write. Workaround: snapshot restore at 6+ strategic points. Root cause: unknown BSS initialization code that blankets zeroes writable data.
+- **vm_read32_fast bypass** — Recompiled code uses inline `vm_read32_fast` that bypasses all hooks in vm_bridge.cpp. Snapshot restores must be done via direct memcpy to vm_base.
+- **SP leak in trampoline chains** — Some function chains leak guest SP. Fixed by re-lifting func_000C6988 chain (11 functions). Other chains may have similar issues.
 
 ### Build Pipeline (Fully Automated)
 
