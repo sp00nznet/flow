@@ -135,12 +135,16 @@ extern "C" void vm_got_snapshot_init(void) {
         g_snap_refs[i].end = s_snapshots[i].end;
     }
 
-    /* Verify critical GOT entry in snapshot */
+    /* Verify critical GOT entries in snapshot */
     if (s_snapshots[0].data) {
-        uint32_t off = 0x8914AC - 0x820000;
-        uint32_t raw; memcpy(&raw, s_snapshots[0].data + off, 4);
-        uint32_t val = bswap32(raw);
-        fprintf(stderr, "[SNAPSHOT] Verify 0x8914AC: snapshot=0x%08X (expect 0x10164D24)\n", val);
+        uint32_t addrs[] = {0x8914AC, 0x8912F0, 0x8913C4, 0x89142C};
+        const char* names[] = {"init flag", "list base", "list limit", "subsys vtable"};
+        for (int j = 0; j < 4; j++) {
+            uint32_t off = addrs[j] - 0x820000;
+            uint32_t raw; memcpy(&raw, s_snapshots[0].data + off, 4);
+            uint32_t val = bswap32(raw);
+            fprintf(stderr, "[SNAPSHOT] Verify 0x%08X (%s): snapshot=0x%08X\n", addrs[j], names[j], val);
+        }
     }
 }
 
