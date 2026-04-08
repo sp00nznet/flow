@@ -51,7 +51,7 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | Graphics backend | **Ready** | D3D12 device + PSO + vertex buffer + clear + present |
 | Audio backend | **Wired** | cellAudio → WASAPI via ps3recomp |
 | Input backend | **Wired** | cellPad → XInput via ps3recomp |
-| Full gameplay | In Progress | PhyreEngine FIFO sync blocks render context creation |
+| Full gameplay | In Progress | Render pipeline connected, scene data needed |
 
 ### What Works Now
 
@@ -83,12 +83,12 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 
 ### Known Issues
 
-- **PhyreEngine FIFO sync loop** — Render context creation (func_000E2BE0) enters a spin loop polling `cellGcmGetControlRegister` + `cellGcmAddressToOffset`. This is NOT `cellGcmFinish` — the command buffer is empty (marker test proved no writes). The loop appears to be a PhyreEngine-specific sync protocol checking a label or semaphore value. Needs reverse-engineering of the exact loop condition.
-- **Switch table targets missing** — func_000CA3B4's switch dispatch (types 10-24) targets addresses not in the function table. Worked around by implementing the 10 cases inline via `subsystem_tick_case()`. The ppu_lifter needs switch table target extraction support.
-- **ELF data zeroing** — Game init code zeroes GOT/OPDs/vtables via fast inline vm_write. Workaround: snapshot restore at 6+ strategic points + gCellGcmCurrentContext chain restore after each snapshot.
-- **Control register endianness** — RSX MMIO accessed via lwbrx/stwbrx in recompiled code → host-endian. Must use direct uint32_t* access, not vm_write32.
-- **vm_read32_fast bypass** — Recompiled code uses inline `vm_read32_fast` that bypasses hooks. Snapshot restores via direct memcpy.
-- **SP leak in trampoline chains** — Some function chains leak guest SP. Fixed by re-lifting func_000C6988 chain.
+- **Render method callbacks** — Engine vtable[2] (func_00810BB8) render method runs but dispatches to zeroed OPD at 0x01800000 (missing PhyreEngine callback). Handled gracefully by dispatch MISS handler.
+- **Empty scene graph** — Render context exists but render_ctx+0x3C4 (scene data) has an empty cluster. Full subsystem ticks would populate this but require switch table target recompilation.
+- **Switch table targets missing** — func_000CA3B4's switch dispatch (types 10-24) targets not in function table. Worked around with inline `subsystem_tick_case()`. Lifter needs switch table target extraction.
+- **ELF data zeroing** — Workaround: snapshot restore at 6+ points + gCellGcmCurrentContext chain restore + BSS 0x10112000-0x10170000 zeroing.
+- **Control register endianness** — RSX MMIO accessed via lwbrx/stwbrx → host-endian uint32_t* access.
+- **vm_read32_fast bypass** — Snapshot restores via direct memcpy to vm_base.
 
 ### Build Pipeline (Fully Automated)
 
