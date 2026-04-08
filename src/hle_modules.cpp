@@ -875,10 +875,102 @@ extern "C" {
 }
 
 /* Guest command buffer state — tracked for flushing */
-static uint32_t g_gcm_context_guest = 0;  /* guest addr of CellGcmContextData */
+extern "C" uint32_t g_gcm_context_guest = 0;  /* guest addr of CellGcmContextData */
 static uint32_t g_gcm_cmdbuf_begin  = 0;  /* guest addr of command buffer start */
 static uint32_t g_gcm_cmdbuf_size   = 0;  /* command buffer size in bytes */
 static uint32_t g_gcm_callback_opd  = 0;  /* guest addr of callback OPD entry */
+
+/* Guest address for the GCM control register mirror */
+extern "C" uint32_t g_gcm_control_guest = 0;
+
+/* Forward declarations */
+static void gcm_flush_guest_cmdbuf(void);
+static void gcm_flush_guest_cmdbuf_noreset(void);
+
+/* RSX FIFO watchdog thread.
+ * Monitors ctrl->put in guest memory. When put changes (game submitted commands),
+ * processes the command buffer and updates ctrl->get and ctrl->ref.
+ * This breaks cellGcmFinish spin loops without needing HLE bridge calls. */
+static volatile int s_fifo_watchdog_active = 0;
+static DWORD WINAPI fifo_watchdog_thread(LPVOID param)
+{
+    (void)param;
+    uint32_t last_put = 0;
+    while (s_fifo_watchdog_active) {
+        if (!g_gcm_control_guest || !g_gcm_cmdbuf_begin) {
+            Sleep(10);
+            continue;
+        }
+        /* Read put from guest memory (big-endian via vm_read32) */
+        uint32_t put = vm_read32(g_gcm_control_guest + 0);
+        uint32_t get = vm_read32(g_gcm_control_guest + 4);
+        if (put != get) {
+            /* Game submitted commands — process and advance get.
+             * Use the actual command buffer begin address, not IO base.
+             * g_gcm_cmdbuf_begin is the guest address of the buffer start. */
+            uint32_t buf_start = g_gcm_cmdbuf_begin;
+            uint32_t io_base = buf_start & ~0xFFFFF; /* align down to IO map base */
+            uint32_t buf_end_addr = io_base + put;
+            if (buf_end_addr > buf_start && buf_end_addr < 0x02000000) {
+                uint32_t scan_size = buf_end_addr - buf_start;
+                const uint32_t* cmdbuf = (const uint32_t*)(vm_base + buf_start);
+                uint32_t num_dwords = scan_size / 4;
+                static int s_wd_log = 0;
+                if (s_wd_log < 3) {
+                    fprintf(stderr, "[FIFO-WD] put=0x%X scan %u bytes from 0x%X, first 8 raw:",
+                            put, scan_size, buf_start);
+                    for (uint32_t d = 0; d < 8 && d < num_dwords; d++)
+                        fprintf(stderr, " %08X", _byteswap_ulong(cmdbuf[d]));
+                    fprintf(stderr, "\n"); fflush(stderr);
+                    s_wd_log++;
+                }
+                /* Scan for SET_REFERENCE and WRITE_BACK_END_LABEL */
+                int found_ref = 0;
+                for (uint32_t i = 0; i < num_dwords; ) {
+                    uint32_t header = _byteswap_ulong(cmdbuf[i++]);
+                    uint32_t type = (header >> 29) & 0x7;
+                    if (type == 0 || type == 2) {
+                        uint32_t method = ((header >> 2) & 0x7FF) << 2;
+                        uint32_t count = (header >> 18) & 0x7FF;
+                        for (uint32_t j = 0; j < count && i < num_dwords; j++, i++) {
+                            uint32_t m = (type == 0) ? (method + j * 4) : method;
+                            uint32_t data = _byteswap_ulong(cmdbuf[i]);
+                            if (m == 0x0050) { /* NV406E_SET_REFERENCE */
+                                vm_write32(g_gcm_control_guest + 8, data);
+                                found_ref = 1;
+                                fprintf(stderr, "[FIFO-WD] SET_REFERENCE ref=%u\n", data);
+                            }
+                            if (m == 0x1D6C) { /* WRITE_BACK_END_LABEL */
+                                fprintf(stderr, "[FIFO-WD] WRITE_BACK_LABEL idx=%u\n", data);
+                            }
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                if (!found_ref && s_wd_log <= 3) {
+                    fprintf(stderr, "[FIFO-WD] No SET_REFERENCE found in %u dwords\n", num_dwords);
+                    fflush(stderr);
+                }
+            }
+            /* Set get = put (commands processed) */
+            vm_write32(g_gcm_control_guest + 4, put);
+            last_put = put;
+        }
+        Sleep(0); /* yield — tight poll for low latency */
+    }
+    return 0;
+}
+
+static void start_fifo_watchdog(void)
+{
+    if (!s_fifo_watchdog_active) {
+        s_fifo_watchdog_active = 1;
+        CreateThread(NULL, 0, fifo_watchdog_thread, NULL, 0, NULL);
+        fprintf(stderr, "[RSX] FIFO watchdog thread started\n");
+        fflush(stderr);
+    }
+}
 
 /* GCM command buffer callback — called when current >= end.
  * Flushes pending commands and resets the write pointer. */
@@ -889,7 +981,22 @@ static void gcm_callback_handler(void* vctx)
 
     if (!g_gcm_context_guest || !g_gcm_cmdbuf_begin) return;
 
-    /* Reset the write pointer so the game can reuse the buffer (offset 12) */
+    /* 1. Flush pending RSX commands before resetting the buffer */
+    gcm_flush_guest_cmdbuf();
+
+    /* 2. Update control register: set put to current write position,
+     *    then set get = put (instant RSX processing) */
+    if (g_gcm_control_guest) {
+        uint32_t current = vm_read32(g_gcm_context_guest + 12);
+        uint32_t begin   = vm_read32(g_gcm_context_guest + 4);
+        uint32_t put_offset = current - begin; /* RSX offset */
+        /* HOST-ENDIAN writes — game reads via lwbrx */
+        uint32_t* ctrl_cb = (uint32_t*)(vm_base + g_gcm_control_guest);
+        ctrl_cb[0] = put_offset; /* put */
+        ctrl_cb[1] = put_offset; /* get = put */
+    }
+
+    /* 3. Reset the write pointer to beginning of command buffer */
     vm_write32(g_gcm_context_guest + 12, g_gcm_cmdbuf_begin);  /* current = begin */
 
     static int s_cb_count = 0;
@@ -1013,6 +1120,19 @@ static int64_t bridge_cellGcmInitBody(ppu_context* ctx)
             /* Write the context pointer to gCellGcmCurrentContext */
             vm_write32(contextPtrAddr, ctx_addr);
             fprintf(stderr, "[HLE]   Wrote context ptr to guest 0x%08X\n", contextPtrAddr);
+
+            /* Map the command buffer region so cellGcmAddressToOffset works.
+             * The buffer is at buf_addr which may not be 1MB-aligned. Map the
+             * surrounding 1MB-aligned region. */
+            {
+                uint32_t map_ea = buf_addr & ~0xFFFFF; /* align down to 1MB */
+                uint32_t map_end = (buf_addr + buf_size + 0xFFFFF) & ~0xFFFFF;
+                uint32_t map_size = map_end - map_ea;
+                uint32_t map_offset = 0;
+                s32 map_rc = cellGcmMapMainMemory(map_ea, map_size, &map_offset);
+                fprintf(stderr, "[HLE]   Mapped cmd buffer region: EA=0x%08X size=0x%X -> offset=0x%X rc=%d\n",
+                        map_ea, map_size, map_offset, map_rc);
+            }
         } else {
             fprintf(stderr, "[HLE]   ERROR: Failed to allocate guest command buffer!\n");
         }
@@ -1043,9 +1163,6 @@ static int64_t bridge_cellGcmGetConfiguration(ppu_context* ctx)
     return rc;
 }
 
-/* Guest address for the GCM control register mirror */
-static uint32_t g_gcm_control_guest = 0;
-
 /* cellGcmGetControlRegister() → r3 = pointer to CellGcmControl */
 static int64_t bridge_cellGcmGetControlRegister(ppu_context* ctx)
 {
@@ -1061,12 +1178,76 @@ static int64_t bridge_cellGcmGetControlRegister(ppu_context* ctx)
         g_gcm_control_guest = (uint32_t)tmp.gpr[3];
 
         if (g_gcm_control_guest) {
-            /* Initialize: put=0, get=0, ref=0 */
-            vm_write32(g_gcm_control_guest + 0, 0); /* put */
-            vm_write32(g_gcm_control_guest + 4, 0); /* get */
-            vm_write32(g_gcm_control_guest + 8, 0); /* ref */
+            /* Initialize: put=0, get=0, ref=0 in HOST-ENDIAN.
+             * Game reads via lwbrx (host-endian on recompiled x86). */
+            uint32_t* ctrl_init = (uint32_t*)(vm_base + g_gcm_control_guest);
+            ctrl_init[0] = 0; /* put */
+            ctrl_init[1] = 0; /* get */
+            ctrl_init[2] = 0; /* ref */
             fprintf(stderr, "[HLE] cellGcmGetControlRegister -> 0x%08X\n",
                     g_gcm_control_guest);
+            /* Start FIFO watchdog to process commands automatically */
+            start_fifo_watchdog();
+        }
+    }
+
+    /* Emulate instant RSX command processing.
+     * CRITICAL: The control register is RSX MMIO (little-endian).
+     * The game uses lwbrx (byte-reversed load) to read it, which in
+     * recompiled code becomes a HOST-ENDIAN read (no byte-swap).
+     * So we must write in HOST-ENDIAN (direct memory, not vm_write32). */
+    if (g_gcm_control_guest) {
+        gcm_flush_guest_cmdbuf_noreset();
+        /* Read/write control register in HOST-ENDIAN (direct memory access).
+         * The game wrote put via lwbrx-style store (host-endian). */
+        uint32_t* ctrl = (uint32_t*)(vm_base + g_gcm_control_guest);
+        uint32_t put = ctrl[0]; /* read put (host-endian) */
+        ctrl[1] = put;          /* get = put (host-endian) */
+        /* Advance ref when put changes */
+        static uint32_t s_last_put = 0;
+        if (put != s_last_put) {
+            ctrl[2] = ctrl[2] + 1; /* ref++ (host-endian) */
+            s_last_put = put;
+        }
+        /* Spin detection: if polled more than 5000 times, the game is
+         * stuck in a FIFO sync loop. Force-skip by setting get=put and
+         * writing a large ref value that satisfies any comparison. */
+        static int s_ctrl_total = 0;
+        s_ctrl_total++;
+        if (s_ctrl_total == 5000) {
+            fprintf(stderr, "[CTRL] Spin detected! Force-breaking loop\n");
+            fflush(stderr);
+            /* Write a large ref that matches any expected value */
+            ctrl[2] = 0xFFFFFFFF;
+        }
+
+        /* Debug: log state and dump caller info */
+        static int s_ctrl_log = 0;
+        if (s_ctrl_total == 100) {
+            /* After 100 calls, dump caller context to identify the loop */
+            fprintf(stderr, "[CTRL-SPIN] 100 iterations! LR=0x%llX SP=0x%llX r3=0x%llX r4=0x%llX r31=0x%llX\n",
+                    (unsigned long long)ctx->lr, (unsigned long long)ctx->gpr[1],
+                    (unsigned long long)ctx->gpr[3], (unsigned long long)ctx->gpr[4],
+                    (unsigned long long)ctx->gpr[31]);
+            /* Dump what the game is reading from the control register */
+            uint32_t raw0 = *(uint32_t*)(vm_base + g_gcm_control_guest + 0);
+            uint32_t raw4 = *(uint32_t*)(vm_base + g_gcm_control_guest + 4);
+            uint32_t raw8 = *(uint32_t*)(vm_base + g_gcm_control_guest + 8);
+            fprintf(stderr, "[CTRL-SPIN] Raw bytes: +0=%08X +4=%08X +8=%08X\n", raw0, raw4, raw8);
+            fprintf(stderr, "[CTRL-SPIN] vm_read: +0=%08X +4=%08X +8=%08X\n",
+                    vm_read32(g_gcm_control_guest), vm_read32(g_gcm_control_guest+4),
+                    vm_read32(g_gcm_control_guest+8));
+            fflush(stderr);
+        }
+        if (s_ctrl_log < 5) {
+            uint32_t cur = vm_read32(g_gcm_context_guest + 12);
+            uint32_t beg = vm_read32(g_gcm_context_guest + 4);
+            uint32_t get_v = vm_read32(g_gcm_control_guest + 4);
+            uint32_t ref_v = vm_read32(g_gcm_control_guest + 8);
+            fprintf(stderr, "[CTRL] put=0x%X get=0x%X ref=0x%X cur=0x%X beg=0x%X\n",
+                    put, get_v, ref_v, cur, beg);
+            fflush(stderr);
+            s_ctrl_log++;
         }
     }
 
@@ -1125,8 +1306,35 @@ static int64_t bridge_cellGcmAddressToOffset(ppu_context* ctx)
     uint32_t host_offset = 0;
     s32 rc = cellGcmAddressToOffset(address, &host_offset);
 
+    /* Fallback: if the address isn't mapped, synthesize an offset.
+     * Addresses in the command buffer / label / heap region that weren't
+     * explicitly mapped with cellGcmMapMainMemory still need offsets. */
+    if (rc != 0 && address >= 0x00A00000 && address < 0x02000000) {
+        host_offset = address - 0x00A00000;
+        rc = 0;
+        static int s_fallback_count = 0;
+        if (s_fallback_count < 5) {
+            fprintf(stderr, "[HLE] cellGcmAddressToOffset: fallback 0x%08X -> offset 0x%08X\n",
+                    address, host_offset);
+            s_fallback_count++;
+        }
+    }
+
     if (rc == CELL_OK && offset_addr)
         vm_write32(offset_addr, host_offset);
+
+    /* Debug: log address, offset, and control register */
+    {
+        static int s_a2o_log = 0;
+        if (s_a2o_log < 3 && g_gcm_control_guest) {
+            uint32_t put = vm_read32(g_gcm_control_guest + 0);
+            uint32_t get = vm_read32(g_gcm_control_guest + 4);
+            fprintf(stderr, "[A2O] addr=0x%08X offset=0x%08X rc=%d put=0x%X get=0x%X\n",
+                    address, host_offset, rc, put, get);
+            fflush(stderr);
+            s_a2o_log++;
+        }
+    }
 
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
     return rc;
@@ -1255,9 +1463,24 @@ static int64_t bridge_cellGcmGetTiledPitchSize(ppu_context* ctx)
 extern "C" int rsx_process_command_buffer(void* state, const uint32_t* buf, uint32_t size);
 extern "C" void rsx_state_init(void* state);
 
-static void gcm_flush_guest_cmdbuf(void)
+/* RSX state — initialized once, updated by command buffer processing */
+static uint8_t s_rsx_state_buf[4096]; /* rsx_state is large, use static buffer */
+static int s_rsx_state_inited = 0;
+
+static void gcm_flush_guest_cmdbuf_impl(int reset_current);
+static void gcm_flush_guest_cmdbuf(void) { gcm_flush_guest_cmdbuf_impl(1); }
+static void gcm_flush_guest_cmdbuf_noreset(void) { gcm_flush_guest_cmdbuf_impl(0); }
+
+static void gcm_flush_guest_cmdbuf_impl(int reset_current)
 {
     if (!g_gcm_context_guest || !g_gcm_cmdbuf_begin) return;
+
+    /* Initialize RSX state on first flush */
+    if (!s_rsx_state_inited) {
+        rsx_state_init(s_rsx_state_buf);
+        s_rsx_state_inited = 1;
+        fprintf(stderr, "[GCM-FLUSH] RSX state initialized\n");
+    }
 
     /* Read current write position from guest context (offset 12 in our layout) */
     uint32_t current = vm_read32(g_gcm_context_guest + 12);
@@ -1274,8 +1497,68 @@ static void gcm_flush_guest_cmdbuf(void)
                 used_bytes, s_flush_count);
     }
 
-    /* Reset the write pointer to the beginning so the game can reuse the buffer */
-    vm_write32(g_gcm_context_guest + 12, begin);  /* current = begin */
+    /* Process the command buffer through the RSX command processor. */
+    const uint32_t* cmdbuf = (const uint32_t*)(vm_base + begin);
+    int methods = rsx_process_command_buffer(s_rsx_state_buf, cmdbuf, used_bytes);
+    if (s_flush_count <= 10) {
+        fprintf(stderr, "[GCM-FLUSH] Processed %d RSX methods\n", methods);
+    }
+
+    /* Scan for NV406E_SET_REFERENCE (method 0x0050) and update ctrl->ref.
+     * Commands are BIG-ENDIAN (PS3 format), byte-swap before parsing. */
+    if (g_gcm_control_guest) {
+        uint32_t num_dwords = used_bytes / 4;
+        /* Debug: dump first few dwords */
+        if (s_flush_count <= 3) {
+            fprintf(stderr, "[GCM-SCAN] %u dwords, first 8:", num_dwords);
+            for (uint32_t d = 0; d < 8 && d < num_dwords; d++)
+                fprintf(stderr, " %08X(%08X)", cmdbuf[d], _byteswap_ulong(cmdbuf[d]));
+            fprintf(stderr, "\n"); fflush(stderr);
+        }
+        for (uint32_t i = 0; i < num_dwords; ) {
+            uint32_t header = _byteswap_ulong(cmdbuf[i++]);
+            uint32_t type = (header >> 29) & 0x7;
+            if (type == 0 || type == 2) {
+                uint32_t method = ((header >> 2) & 0x7FF) << 2;
+                uint32_t count = (header >> 18) & 0x7FF;
+                for (uint32_t j = 0; j < count && i < num_dwords; j++, i++) {
+                    uint32_t m = (type == 0) ? (method + j * 4) : method;
+                    uint32_t data = _byteswap_ulong(cmdbuf[i]);
+                    if (m == 0x0050) { /* NV406E_SET_REFERENCE */
+                        vm_write32(g_gcm_control_guest + 8, data);
+                        static int s_ref_log = 0;
+                        if (s_ref_log < 5) {
+                            fprintf(stderr, "[GCM-FLUSH] SET_REFERENCE ref=%u\n", data);
+                            s_ref_log++;
+                        }
+                    }
+                    if (m == 0x1D6C && (j + 1) < count && (i + 1) < num_dwords) {
+                        /* NV4097_SET_WRITE_BACK_END_LABEL: index=data, value=next */
+                        uint32_t label_index = data;
+                        uint32_t label_value = _byteswap_ulong(cmdbuf[i + 1]);
+                        if (g_gcm_labels_guest && label_index < 256) {
+                            vm_write32(g_gcm_labels_guest + label_index * 4, label_value);
+                            static int s_lbl_log = 0;
+                            if (s_lbl_log < 5) {
+                                fprintf(stderr, "[GCM-FLUSH] WRITE_BACK_LABEL[%u]=%u\n",
+                                        label_index, label_value);
+                                s_lbl_log++;
+                            }
+                        }
+                    }
+                }
+            } else {
+                break; /* jump or unknown */
+            }
+        }
+    }
+
+    /* Reset the write pointer to the beginning so the game can reuse the buffer.
+     * Only reset when explicitly requested (flip/callback), not on auto-flush
+     * from GetControlRegister (the game may still be writing to the buffer). */
+    if (reset_current) {
+        vm_write32(g_gcm_context_guest + 12, begin);  /* current = begin */
+    }
 }
 
 /* cellGcmSetFlip(bufferId) */
@@ -1284,7 +1567,15 @@ static int64_t bridge_cellGcmSetFlip(ppu_context* ctx)
     /* Flush pending RSX commands before flip */
     gcm_flush_guest_cmdbuf();
 
-    s32 rc = cellGcmSetFlipCommand((uint32_t)ctx->gpr[3]);
+    uint32_t buf_id = (uint32_t)ctx->gpr[3];
+    s32 rc = cellGcmSetFlipCommand(buf_id);
+    if (rc != 0) {
+        static int s_flip_err_count = 0;
+        if (s_flip_err_count < 5) {
+            fprintf(stderr, "[HLE] cellGcmSetFlip(buf=%u) FAILED rc=0x%X\n", buf_id, (unsigned)rc);
+            s_flip_err_count++;
+        }
+    }
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
     return rc;
 }
