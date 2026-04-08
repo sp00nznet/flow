@@ -1209,17 +1209,8 @@ static int64_t bridge_cellGcmGetControlRegister(ppu_context* ctx)
             ctrl[2] = ctrl[2] + 1; /* ref++ (host-endian) */
             s_last_put = put;
         }
-        /* Spin detection: if polled more than 5000 times, the game is
-         * stuck in a FIFO sync loop. Force-skip by setting get=put and
-         * writing a large ref value that satisfies any comparison. */
         static int s_ctrl_total = 0;
         s_ctrl_total++;
-        if (s_ctrl_total == 5000) {
-            fprintf(stderr, "[CTRL] Spin detected! Force-breaking loop\n");
-            fflush(stderr);
-            /* Write a large ref that matches any expected value */
-            ctrl[2] = 0xFFFFFFFF;
-        }
 
         /* Debug: log state and dump caller info */
         static int s_ctrl_log = 0;
