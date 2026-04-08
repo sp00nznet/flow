@@ -45,38 +45,50 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | GCM / RSX init | **Complete** | Guest command buffer, display buffers, tile/zcull, MapMainMemory |
 | Engine init | **Complete** | PhyreEngine created, 12 subsystems, vtables resolved |
 | Input init | **Complete** | cellPadInit, cellKbInit (×4), cellMouseInit |
-| Engine game loop | **Running** | Enters vtable[3] game loop call, subsystem tick executes |
+| Engine game loop | **Running** | Continuous frame loop, 12 subsystems ticking each frame |
+| GCM rendering | **Working** | NV40 command buffer → RSX processor → clear color on screen |
+| Buffer flips | **Working** | cellGcmSetFlipCommand alternating buffers 0/1 |
 | Graphics backend | **Ready** | D3D12 device + PSO + vertex buffer + clear + present |
 | Audio backend | **Wired** | cellAudio → WASAPI via ps3recomp |
 | Input backend | **Wired** | cellPad → XInput via ps3recomp |
-| Full gameplay | In Progress | Subsystem tick assertion — engine state partially initialized |
+| Full gameplay | In Progress | PhyreEngine FIFO sync blocks render context creation |
 
 ### What Works Now
 
-- **102,056 functions** recompiled to native C++ (base lift + 2 targeted re-lifts for missing fragments)
-- **PhyreEngine fully initialized** — 12 subsystems created with derived vtables, engine object with vtable 0x1006E508
-- **GCM / RSX initialized** — guest command buffer (960KB), display buffers, tile, zcull, MapMainMemory (24MB IO mapping)
+- **Continuous frame loop** — 600+ frames at ~20fps with 16ms Sleep pacing
+- **12 subsystems registered and ticking** — engine internal array populated, types 10-19 assigned
+- **Inline switch table cases** — 10 subsystem tick interpolation cases implemented directly in C, bypassing missing dispatch table entries
+- **GCM rendering pipeline** — NV40 clear commands written to command buffer → `rsx_process_command_buffer` → null backend clear → animated clear color on screen
+- **Buffer flips** — `cellGcmSetFlipCommand` alternating buffers 0/1, 300+ flips per 30 seconds
+- **RSX command processor** — `rsx_process_command_buffer` parses NV40 methods, dispatches to backend
+- **FIFO watchdog thread** — monitors ctrl->put, scans for SET_REFERENCE, updates ctrl->get/ref
+- **Window rendering** — "flOw" window 1920×1080, animated clear color with debug FPS overlay
+- **102,056 functions** recompiled to native C++ (base lift + 2 targeted re-lifts)
+- **PhyreEngine initialized** — 12 subsystems, engine vtable 0x1006E508, game instance at BSS 0x10163764
+- **GCM / RSX initialized** — guest command buffer (960KB), display buffers, tile, zcull, IO mapping
 - **Input system initialized** — cellPadInit, cellKbInit (4 code types), cellMouseInit
-- **Game loop virtual call resolves** — engine vtable[3] → func_000CAA08 (subsystem tick)
-- **3-level OPD dispatch** for C++ virtual method calls: object → vtable → method OPD → function
-- **ELF data snapshot system** — protects 1.3MB of zeroed GOT entries, OPDs, and vtables from game init code
+- **3-level OPD dispatch** for C++ virtual method calls
+- **ELF data snapshot system** — protects 1.3MB of zeroed GOT entries, OPDs, and vtables
+- **gCellGcmCurrentContext restoration** — survives snapshot restores via GOT + BSS chain fix
+- **Control register emulation** — host-endian put/get/ref with per-put-change ref increment
+- **AddressToOffset fallback** — handles unmapped heap addresses for GCM operations
 - **CRT abort redirect via longjmp** — intercepts CRT abort, recovers into main()
 - **166 static constructors** executing via indirect call dispatch
 - **VMX/AltiVec** — vector loads, stores, float arithmetic, permute, select, compare all working
 - **7 HLE modules with real bridges** — PPC64 ABI parameter extraction, BE struct output, host OS backends
 - **HLE malloc** — bump allocator bypassing CRT's Dinkumware heap
-- **cellHddGameCheck** with funcStat callback invocation
-- **cellGcmMapMainMemory** with EA alignment fix (1MB boundary)
 - **D3D12 window** — opens on startup with Win32 message pump, RSX null/D3D12 backend ready
 - **Real WASAPI audio**, **XInput gamepad**, **filesystem I/O**, **lightweight mutexes**
 - **LV2 syscall dispatch** with sys_tty_write/read, event ports, timers
 
 ### Known Issues
 
-- **Subsystem tick assertion** — func_000CAA08 (engine vtable[3]) iterates subsystems and calls their tick methods. The first subsystem tick triggers sys_process_exit(1). The engine's internal subsystem array needs proper population from the init chain.
-- **ELF data zeroing** — Game init code zeroes large portions of segment 1 (GOT, OPDs) and segment 3 (vtables) via fast inline vm_write. Workaround: snapshot restore at 6+ strategic points. Root cause: unknown BSS initialization code that blankets zeroes writable data.
-- **vm_read32_fast bypass** — Recompiled code uses inline `vm_read32_fast` that bypasses all hooks in vm_bridge.cpp. Snapshot restores must be done via direct memcpy to vm_base.
-- **SP leak in trampoline chains** — Some function chains leak guest SP. Fixed by re-lifting func_000C6988 chain (11 functions). Other chains may have similar issues.
+- **PhyreEngine FIFO sync loop** — Render context creation (func_000E2BE0) enters a spin loop polling `cellGcmGetControlRegister` + `cellGcmAddressToOffset`. This is NOT `cellGcmFinish` — the command buffer is empty (marker test proved no writes). The loop appears to be a PhyreEngine-specific sync protocol checking a label or semaphore value. Needs reverse-engineering of the exact loop condition.
+- **Switch table targets missing** — func_000CA3B4's switch dispatch (types 10-24) targets addresses not in the function table. Worked around by implementing the 10 cases inline via `subsystem_tick_case()`. The ppu_lifter needs switch table target extraction support.
+- **ELF data zeroing** — Game init code zeroes GOT/OPDs/vtables via fast inline vm_write. Workaround: snapshot restore at 6+ strategic points + gCellGcmCurrentContext chain restore after each snapshot.
+- **Control register endianness** — RSX MMIO accessed via lwbrx/stwbrx in recompiled code → host-endian. Must use direct uint32_t* access, not vm_write32.
+- **vm_read32_fast bypass** — Recompiled code uses inline `vm_read32_fast` that bypasses hooks. Snapshot restores via direct memcpy.
+- **SP leak in trampoline chains** — Some function chains leak guest SP. Fixed by re-lifting func_000C6988 chain.
 
 ### Build Pipeline (Fully Automated)
 
