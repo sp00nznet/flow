@@ -131,7 +131,7 @@ target_compile_definitions(flow PRIVATE
 # ---------------------------------------------------------------------------
 if(WIN32)
     target_link_libraries(flow PRIVATE
-        ws2_32 xinput ole32 bcrypt d3d12 dxgi uuid
+        ws2_32 xinput ole32 bcrypt d3d12 dxgi uuid dxguid
     )
 endif()
 

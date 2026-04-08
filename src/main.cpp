@@ -83,10 +83,14 @@ extern "C" void hle_guest_realloc(ppu_context* ctx);
 /* Recompiled function entry (from func_table.cpp) */
 extern "C" void func_006B738C(ppu_context* ctx);  /* malloc */
 
-/* RSX null backend (from ps3recomp runtime) */
+/* RSX backends (from ps3recomp runtime) */
 extern "C" int rsx_null_backend_init(uint32_t w, uint32_t h, const char* title);
 extern "C" void rsx_null_backend_shutdown(void);
 extern "C" int rsx_null_backend_pump_messages(void);
+extern "C" int rsx_d3d12_backend_init(uint32_t w, uint32_t h, const char* title);
+extern "C" void rsx_d3d12_backend_shutdown(void);
+extern "C" int rsx_d3d12_backend_pump_messages(void);
+extern "C" void rsx_d3d12_backend_present(void);
 
 /* Trampoline continuation (from indirect_dispatch.cpp) */
 extern "C" __declspec(thread) void (*g_trampoline_fn)(void*);
@@ -356,14 +360,23 @@ int main(int argc, char* argv[])
      * so returning from main() cleanly calls exit. */
     ctx.lr = 0x008175FC;  /* sys_process_exit import stub */
 
-    /* 8. Initialize null graphics backend (Win32 window for RSX clear color). */
+    /* 8. Initialize graphics backend — try D3D12 first, fall back to null. */
     {
-        if (rsx_null_backend_init(FLOW_WINDOW_WIDTH, FLOW_WINDOW_HEIGHT,
-                                   FLOW_WINDOW_TITLE) == 0) {
-            printf("[init] RSX null backend: %ux%u window\n",
+        int backend_ok = 0;
+        if (rsx_d3d12_backend_init(FLOW_WINDOW_WIDTH, FLOW_WINDOW_HEIGHT,
+                                    FLOW_WINDOW_TITLE) == 0) {
+            printf("[init] RSX D3D12 backend: %ux%u window\n",
                    FLOW_WINDOW_WIDTH, FLOW_WINDOW_HEIGHT);
-        } else {
-            printf("[init] RSX null backend: failed (continuing without window)\n");
+            backend_ok = 1;
+        }
+        if (!backend_ok) {
+            if (rsx_null_backend_init(FLOW_WINDOW_WIDTH, FLOW_WINDOW_HEIGHT,
+                                       FLOW_WINDOW_TITLE) == 0) {
+                printf("[init] RSX null backend: %ux%u window\n",
+                       FLOW_WINDOW_WIDTH, FLOW_WINDOW_HEIGHT);
+            } else {
+                printf("[init] RSX backend: failed (continuing without window)\n");
+            }
         }
     }
 
