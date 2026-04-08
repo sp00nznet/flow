@@ -1209,36 +1209,16 @@ static int64_t bridge_cellGcmGetControlRegister(ppu_context* ctx)
             ctrl[2] = ctrl[2] + 1; /* ref++ (host-endian) */
             s_last_put = put;
         }
+        /* Spin detection: if GetControlRegister is called >5000 times
+         * rapidly, the game is stuck in a FIFO sync loop. Use longjmp
+         * to break out, similar to CRT abort redirect. */
         static int s_ctrl_total = 0;
         s_ctrl_total++;
-
-        /* Debug: log state and dump caller info */
-        static int s_ctrl_log = 0;
-        if (s_ctrl_total == 100) {
-            /* After 100 calls, dump caller context to identify the loop */
-            fprintf(stderr, "[CTRL-SPIN] 100 iterations! LR=0x%llX SP=0x%llX r3=0x%llX r4=0x%llX r31=0x%llX\n",
-                    (unsigned long long)ctx->lr, (unsigned long long)ctx->gpr[1],
-                    (unsigned long long)ctx->gpr[3], (unsigned long long)ctx->gpr[4],
-                    (unsigned long long)ctx->gpr[31]);
-            /* Dump what the game is reading from the control register */
-            uint32_t raw0 = *(uint32_t*)(vm_base + g_gcm_control_guest + 0);
-            uint32_t raw4 = *(uint32_t*)(vm_base + g_gcm_control_guest + 4);
-            uint32_t raw8 = *(uint32_t*)(vm_base + g_gcm_control_guest + 8);
-            fprintf(stderr, "[CTRL-SPIN] Raw bytes: +0=%08X +4=%08X +8=%08X\n", raw0, raw4, raw8);
-            fprintf(stderr, "[CTRL-SPIN] vm_read: +0=%08X +4=%08X +8=%08X\n",
-                    vm_read32(g_gcm_control_guest), vm_read32(g_gcm_control_guest+4),
-                    vm_read32(g_gcm_control_guest+8));
+        if (s_ctrl_total == 5000) {
+            fprintf(stderr, "[CTRL-SPIN] Spin detected after 5000 calls, forcing longjmp!\n");
             fflush(stderr);
-        }
-        if (s_ctrl_log < 5) {
-            uint32_t cur = vm_read32(g_gcm_context_guest + 12);
-            uint32_t beg = vm_read32(g_gcm_context_guest + 4);
-            uint32_t get_v = vm_read32(g_gcm_control_guest + 4);
-            uint32_t ref_v = vm_read32(g_gcm_control_guest + 8);
-            fprintf(stderr, "[CTRL] put=0x%X get=0x%X ref=0x%X cur=0x%X beg=0x%X\n",
-                    put, get_v, ref_v, cur, beg);
-            fflush(stderr);
-            s_ctrl_log++;
+            s_ctrl_total = 0; /* reset for next use */
+            longjmp(g_abort_jmp, 42); /* special code for spin escape */
         }
     }
 
