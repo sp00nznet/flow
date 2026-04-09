@@ -46,7 +46,7 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | Engine init | **Complete** | PhyreEngine created, 12 subsystems, vtables resolved |
 | Input init | **Complete** | cellPadInit, cellKbInit (×4), cellMouseInit |
 | Engine game loop | **Running** | Continuous frame loop, 12 subsystems ticking each frame |
-| GCM rendering | **Working** | NV40 command buffer → RSX processor → clear color on screen |
+| GCM rendering | **Working** | D3D12 GPU: clear color + colored triangle rendering on screen |
 | Buffer flips | **Working** | cellGcmSetFlipCommand alternating buffers 0/1 |
 | Graphics backend | **Ready** | D3D12 device + PSO + vertex buffer + clear + present |
 | Audio backend | **Wired** | cellAudio → WASAPI via ps3recomp |
