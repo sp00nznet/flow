@@ -46,7 +46,7 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | Engine init | **Complete** | PhyreEngine created, 12 subsystems, vtables resolved |
 | Input init | **Complete** | cellPadInit, cellKbInit (×4), cellMouseInit |
 | Engine game loop | **Running** | Continuous frame loop, 12 subsystems ticking each frame |
-| GCM rendering | **Working** | D3D12 GPU: dark blue bg + animated organism at ~17fps |
+| GCM rendering | **Working** | D3D12 GPU: 12 game-state organisms on ocean bg, ~17fps |
 | Buffer flips | **Working** | cellGcmSetFlipCommand alternating buffers 0/1 |
 | Graphics backend | **Ready** | D3D12 device + PSO + vertex buffer + clear + present |
 | Audio backend | **Wired** | cellAudio → WASAPI via ps3recomp |
