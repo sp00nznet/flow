@@ -1239,14 +1239,20 @@ static int64_t bridge_cellGcmGetControlRegister(ppu_context* ctx)
             }
             fflush(stderr);
         }
-        /* Clear PhyreEngine FIFO pending flags at data structures
-         * referenced by current registers. The game checks +0x18
-         * as a "commands pending" flag that the RSX would clear. */
+        /* Clear PhyreEngine FIFO pending flags on ALL structures.
+         * func_000D5054 sets +0x18=1 on r27, r28, r30, r26.
+         * Clear all of them so the caller doesn't spin. */
         {
-            /* Clear flag at *(r31+0x18) — the main FIFO sync flag */
-            uint32_t r31 = (uint32_t)ctx->gpr[31];
-            if (r31 > 0x100000 && r31 < 0x10000000) {
-                if (vm_read32(r31 + 0x18) != 0) vm_write32(r31 + 0x18, 0);
+            uint32_t regs[] = {
+                (uint32_t)ctx->gpr[31], (uint32_t)ctx->gpr[27],
+                (uint32_t)ctx->gpr[28], (uint32_t)ctx->gpr[30],
+                (uint32_t)ctx->gpr[26], (uint32_t)ctx->gpr[29]
+            };
+            for (int ri = 0; ri < 6; ri++) {
+                uint32_t r = regs[ri];
+                if (r > 0x100000 && r < 0x10000000) {
+                    if (vm_read32(r + 0x18) != 0) vm_write32(r + 0x18, 0);
+                }
             }
             /* Patch NULL OPDs in heap objects the game is trying to call.
              * When the game reads an OPD with func=0, it spins forever.
