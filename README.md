@@ -46,23 +46,27 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | Engine init | **Complete** | PhyreEngine created, 12 subsystems, vtables resolved |
 | Input init | **Complete** | cellPadInit, cellKbInit (×4), cellMouseInit |
 | Engine game loop | **Running** | Continuous frame loop, 12 subsystems ticking each frame |
-| GCM rendering | **Working** | D3D12 GPU: Level 3 ocean gradient + snake + particles + food |
-| Buffer flips | **Working** | cellGcmSetFlipCommand alternating buffers 0/1 |
-| Graphics backend | **Ready** | D3D12 device + PSO + vertex buffer + clear + present |
+| GCM rendering | **Working** | D3D12 GPU: Level 3 scene — ocean gradient, snake, particles, food (486 verts) |
+| Buffer flips | **Working** | cellGcmSetFlipCommand alternating buffers 0/1, batched DRAW_ARRAYS |
+| Graphics backend | **D3D12** | Device FL11.0, vertex-colored PSO, 112KB VB, DrawInstanced, VSync |
 | Audio backend | **Wired** | cellAudio → WASAPI via ps3recomp |
 | Input backend | **Wired** | cellPad → XInput via ps3recomp |
-| Full gameplay | In Progress | Render pipeline connected, scene data needed |
+| FIFO sync | **Partial** | All-register flag clearing solves 2/3 spin levels in PhyreEngine init |
+| Full gameplay | In Progress | Render context init blocked by data loop (no HLE escape point) |
 
 ### What Works Now
 
-- **Continuous frame loop** — 600+ frames at ~20fps with 16ms Sleep pacing
+- **D3D12 GPU rendering** — Level 3 scene: ocean gradient, 9-segment snake creature, 16 food objects, 40 particles (486 vertices via batched DRAW_ARRAYS)
+- **Level data parsing** — reads flOw XML level definitions for authentic background colors, creature parameters, particle counts
+- **Continuous frame loop** — 800+ frames, ~17fps with D3D12 VSync, snapshot restore every 10 frames
 - **12 subsystems registered and ticking** — engine internal array populated, types 10-19 assigned
-- **Inline switch table cases** — 10 subsystem tick interpolation cases implemented directly in C, bypassing missing dispatch table entries
-- **GCM rendering pipeline** — NV40 clear commands written to command buffer → `rsx_process_command_buffer` → null backend clear → animated clear color on screen
-- **Buffer flips** — `cellGcmSetFlipCommand` alternating buffers 0/1, 300+ flips per 30 seconds
-- **RSX command processor** — `rsx_process_command_buffer` parses NV40 methods, dispatches to backend
-- **FIFO watchdog thread** — monitors ctrl->put, scans for SET_REFERENCE, updates ctrl->get/ref
-- **Window rendering** — "flOw" window 1920×1080, animated clear color with debug FPS overlay
+- **Inline switch table cases** — 10 subsystem tick interpolation cases implemented directly in C
+- **Full GCM command pipeline** — NV40 commands → gcm_flush → rsx_process_command_buffer → D3D12 backend
+- **Batched draw calls** — DRAW_ARRAYS split into 255-vertex batches for RSX method format
+- **RSX command processor** — parses NV40 methods (surface, viewport, clear, attribs, draw, begin/end)
+- **FIFO flag clearing** — clears PhyreEngine pending flags on r27/r28/r30/r26/r29/r31 (+0x18)
+- **FIFO watchdog thread** — monitors ctrl->put, scans for SET_REFERENCE, patches NULL OPDs
+- **D3D12 backend** — Device FL11.0, vertex-colored PSO, 112KB VB, DrawInstanced, VSync present
 - **102,056 functions** recompiled to native C++ (base lift + 2 targeted re-lifts)
 - **PhyreEngine initialized** — 12 subsystems, engine vtable 0x1006E508, game instance at BSS 0x10163764
 - **GCM / RSX initialized** — guest command buffer (960KB), display buffers, tile, zcull, IO mapping
