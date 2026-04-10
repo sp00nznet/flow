@@ -92,6 +92,9 @@ extern "C" void rsx_d3d12_backend_shutdown(void);
 extern "C" int rsx_d3d12_backend_pump_messages(void);
 extern "C" void rsx_d3d12_backend_present(void);
 
+/* Force escape flag for CTR=0 spin detection (from ppu_recomp.cpp) */
+extern "C" volatile int g_force_escape;
+
 /* Trampoline continuation (from indirect_dispatch.cpp) */
 extern "C" __declspec(thread) void (*g_trampoline_fn)(void*);
 
@@ -626,9 +629,18 @@ int main(int argc, char* argv[])
                                     }
                                 }
                             }
+                            static int s_total_ctr0_patches = 0;
+                            s_total_ctr0_patches++;
+                            /* After 3 total CTR=0 patches, force escape */
+                            if (s_total_ctr0_patches >= 2) {
+                                g_force_escape = 1;
+                                fprintf(stderr, "[WATCHDOG] Requesting forced escape (%d CTR=0 patches)\n",
+                                        s_total_ctr0_patches);
+                                fflush(stderr);
+                            }
                             ResumeThread(h);
-                            fprintf(stderr, "[WATCHDOG] Patched CTR+r3, %d struct fixes, r31=0x%08X\n",
-                                    patched, (uint32_t)gctx->gpr[31]);
+                            fprintf(stderr, "[WATCHDOG] Patched CTR+r3 (#%d), %d struct fixes, r31=0x%08X\n",
+                                    s_total_ctr0_patches, patched, (uint32_t)gctx->gpr[31]);
                             fflush(stderr);
                             s_ctr0_count = 0;
                         }

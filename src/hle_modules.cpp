@@ -1269,7 +1269,7 @@ static int64_t bridge_cellGcmGetControlRegister(ppu_context* ctx)
                 }
             }
         }
-        if (s_ctrl_total == 100000) {
+        if (s_ctrl_total == 5000) {
             fprintf(stderr, "[CTRL-SPIN] 100000 calls, forcing longjmp!\n");
             fflush(stderr);
             s_ctrl_total = 0;
