@@ -1214,11 +1214,66 @@ static int64_t bridge_cellGcmGetControlRegister(ppu_context* ctx)
          * to break out, similar to CRT abort redirect. */
         static int s_ctrl_total = 0;
         s_ctrl_total++;
-        if (s_ctrl_total == 5000) {
-            fprintf(stderr, "[CTRL-SPIN] Spin detected after 5000 calls, forcing longjmp!\n");
+        /* On iteration 50, dump the PPU state to understand the loop condition */
+        if (s_ctrl_total == 50) {
+            fprintf(stderr, "[CTRL-SPIN] Iteration 50 — dumping loop state:\n");
+            fprintf(stderr, "  r3=0x%llX r4=0x%llX r9=0x%llX r11=0x%llX r31=0x%llX\n",
+                    (unsigned long long)ctx->gpr[3], (unsigned long long)ctx->gpr[4],
+                    (unsigned long long)ctx->gpr[9], (unsigned long long)ctx->gpr[11],
+                    (unsigned long long)ctx->gpr[31]);
+            /* Dump memory at r31 (the data structure being checked) */
+            uint32_t r31 = (uint32_t)ctx->gpr[31];
+            if (r31 > 0x100000 && r31 < 0x10000000) {
+                fprintf(stderr, "  *(r31): ");
+                for (int d = 0; d < 8; d++)
+                    fprintf(stderr, "%08X ", vm_read32(r31 + d * 4));
+                fprintf(stderr, "\n");
+            }
+            /* Also dump what r3 points to (control register area) */
+            uint32_t r3 = (uint32_t)ctx->gpr[3];
+            if (r3 > 0x100000 && r3 < 0x10000000) {
+                fprintf(stderr, "  *(r3):  ");
+                for (int d = 0; d < 4; d++)
+                    fprintf(stderr, "%08X ", vm_read32(r3 + d * 4));
+                fprintf(stderr, "\n");
+            }
             fflush(stderr);
-            s_ctrl_total = 0; /* reset for next use */
-            longjmp(g_abort_jmp, 42); /* special code for spin escape */
+        }
+        /* Clear PhyreEngine FIFO pending flags at data structures
+         * referenced by current registers. The game checks +0x18
+         * as a "commands pending" flag that the RSX would clear. */
+        {
+            /* Clear flag at *(r31+0x18) — the main FIFO sync flag */
+            uint32_t r31 = (uint32_t)ctx->gpr[31];
+            if (r31 > 0x100000 && r31 < 0x10000000) {
+                if (vm_read32(r31 + 0x18) != 0) vm_write32(r31 + 0x18, 0);
+            }
+            /* Patch NULL OPDs in heap objects the game is trying to call.
+             * When the game reads an OPD with func=0, it spins forever.
+             * Write a NOP function (func_000CBF40) to make it proceed. */
+            uint32_t ctr = (uint32_t)ctx->ctr;
+            if (ctr == 0) {
+                /* CTR=0 means the game is about to call a NULL function.
+                 * The OPD was read from some object. Patch it. */
+                uint32_t r9 = (uint32_t)ctx->gpr[9];
+                if (r9 > 0x100000 && r9 < 0x10000000 && vm_read32(r9) == 0) {
+                    vm_write32(r9, 0x000CBF40); /* NOP function */
+                    vm_write32(r9 + 4, 0x008969A8); /* TOC */
+                    ctx->ctr = 0x000CBF40;
+                    static int s_nop_patches = 0;
+                    if (s_nop_patches < 10) {
+                        fprintf(stderr, "[CTRL-SPIN] Patched NULL OPD at 0x%08X\n", r9);
+                        fflush(stderr);
+                        s_nop_patches++;
+                    }
+                }
+            }
+        }
+        if (s_ctrl_total == 100000) {
+            fprintf(stderr, "[CTRL-SPIN] 100000 calls, forcing longjmp!\n");
+            fflush(stderr);
+            s_ctrl_total = 0;
+            longjmp(g_abort_jmp, 42);
         }
     }
 

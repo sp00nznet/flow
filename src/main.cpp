@@ -558,8 +558,8 @@ int main(int argc, char* argv[])
                             DUPLICATE_SAME_ACCESS);
             CreateThread(NULL, 0, [](LPVOID p) -> DWORD {
                 HANDLE h = (HANDLE)p;
-                for (int i = 0; i < 10; i++) {
-                    Sleep(2000);
+                for (int i = 0; i < 60; i++) {
+                    Sleep(500); /* faster polling for CTR=0 patching */
                     SuspendThread(h);
                     CONTEXT c = {}; c.ContextFlags = CONTEXT_CONTROL;
                     GetThreadContext(h, &c);
@@ -572,6 +572,67 @@ int main(int argc, char* argv[])
                     uint64_t cia = gctx->cia;
                     uint64_t r4 = gctx->gpr[4];
                     uint64_t r5 = gctx->gpr[5];
+                    /* Detect CTR=0 spin: if the game is stuck calling a NULL
+                     * function pointer, scan nearby heap objects and patch
+                     * NULL OPDs with NOP function pointers. */
+                    if (ctr == 0) {
+                        static int s_ctr0_count = 0;
+                        s_ctr0_count++;
+                        if (s_ctr0_count >= 2) {
+                            /* CTR=0 spin: the game reads a NULL function
+                             * pointer from a data structure. Patch both the
+                             * CTR and the source memory. Scan the stack and
+                             * nearby heap for the NULL pointer source. */
+                            SuspendThread(h);
+                            gctx->ctr = 0x000CBF40;
+                            /* Write NOP OPD to scratch area */
+                            vm_write32(0x02100000, 0x000CBF40);
+                            vm_write32(0x02100004, 0x008969A8);
+                            /* Create a fake object with NOP vtable */
+                            for (int off = 0; off < 64; off += 4) {
+                                vm_write32(0x02100000 + off, 0x000CBF40);
+                            }
+                            /* Scan stack frame for NULL pointers and patch */
+                            uint32_t cur_sp = (uint32_t)gctx->gpr[1];
+                            int patched = 0;
+                            for (uint32_t soff = 0; soff < 0x100; soff += 8) {
+                                uint32_t v = vm_read32(cur_sp + soff);
+                                if (v == 0 && soff >= 0x20) {
+                                    /* Might be a NULL object pointer on the stack */
+                                }
+                            }
+                            /* Patch the source structure at r31 extensively.
+                             * Write NOP OPD pointers to ALL NULL entries so the
+                             * game finds valid function pointers everywhere. */
+                            if (gctx->gpr[3] == 0) {
+                                gctx->gpr[3] = 0x02100000;
+                            }
+                            uint32_t r31v = (uint32_t)gctx->gpr[31];
+                            if (r31v > 0x100000 && r31v < 0x10000000) {
+                                for (int off = 0; off < 128; off += 4) {
+                                    if (vm_read32(r31v + off) == 0) {
+                                        vm_write32(r31v + off, 0x02100000);
+                                        patched++;
+                                    }
+                                }
+                            }
+                            /* Also patch the object r31 points into */
+                            uint32_t r31_deref = vm_read32(r31v);
+                            if (r31_deref > 0x100000 && r31_deref < 0x10000000) {
+                                for (int off = 0; off < 64; off += 4) {
+                                    if (vm_read32(r31_deref + off) == 0) {
+                                        vm_write32(r31_deref + off, 0x02100000);
+                                        patched++;
+                                    }
+                                }
+                            }
+                            ResumeThread(h);
+                            fprintf(stderr, "[WATCHDOG] Patched CTR+r3, %d struct fixes, r31=0x%08X\n",
+                                    patched, (uint32_t)gctx->gpr[31]);
+                            fflush(stderr);
+                            s_ctr0_count = 0;
+                        }
+                    }
                     ResumeThread(h);
                     HMODULE hm = NULL;
                     GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,

@@ -435,6 +435,14 @@ done_dispatch: ;
                     g_abort_redirect = 1;
                     longjmp(g_abort_jmp, 1);
                 }
+                /* Also break spins during render init (phase 99+) */
+                if (s_repeat_count > 200) {
+                    fprintf(stderr, "[dispatch] Spin on 0x%08X (%d repeats), longjmp escape\n",
+                            target, s_repeat_count);
+                    fflush(stderr);
+                    s_repeat_count = 0;
+                    longjmp(g_abort_jmp, 42);
+                }
             }
         } else {
             s_last_miss = target;
