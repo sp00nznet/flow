@@ -649,8 +649,30 @@ int main(int argc, char* argv[])
                     HMODULE hm = NULL;
                     GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                                        (LPCSTR)c.Rip, &hm);
-                    fprintf(stderr, "[WATCHDOG] RIP=exe+0x%llX CIA=0x%08X LR=0x%llX SP=0x%llX r3=0x%llX r4=0x%llX r5=0x%llX CTR=0x%llX\n",
+
+                    /* Resolve host RIP -> recompiled guest function name.
+                     * Linear scan of the static function table — the nearest
+                     * host_func <= RIP is the containing guest function. The
+                     * table is large (~100K entries) but this runs every 500ms
+                     * so the cost is in the noise. */
+                    const char* guest_name = "?";
+                    uint32_t    guest_addr = 0;
+                    uintptr_t   best_delta = (uintptr_t)-1;
+                    for (size_t fi = 0; fi < g_recompiled_func_count; fi++) {
+                        uintptr_t hf = (uintptr_t)g_recompiled_funcs[fi].host_func;
+                        if (hf <= (uintptr_t)c.Rip) {
+                            uintptr_t d = (uintptr_t)c.Rip - hf;
+                            if (d < best_delta) {
+                                best_delta = d;
+                                guest_name = g_recompiled_funcs[fi].name;
+                                guest_addr = g_recompiled_funcs[fi].guest_addr;
+                            }
+                        }
+                    }
+
+                    fprintf(stderr, "[WATCHDOG] RIP=exe+0x%llX in %s (guest 0x%08X+0x%llX) CIA=0x%08X LR=0x%llX SP=0x%llX r3=0x%llX r4=0x%llX r5=0x%llX CTR=0x%llX\n",
                             (unsigned long long)(c.Rip - (uintptr_t)hm),
+                            guest_name, guest_addr, (unsigned long long)best_delta,
                             (uint32_t)cia,
                             (unsigned long long)lr,
                             (unsigned long long)sp,
