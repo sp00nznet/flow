@@ -184,14 +184,19 @@ static int64_t bridge_sys_process_exit(ppu_context* ctx)
     /* Game main phase: the game's assertion handler calls exit(1) then
      * exitspawn. Since exitspawn can't actually restart the process,
      * returning from exit leads to a dead loop. Instead, halt cleanly
-     * after a few assertions. */
+     * after too many assertions. We catch up to 200 — the game's
+     * C++ exception handling sometimes takes many retries before
+     * finding its way to a stable state (e.g. after the placeholder
+     * render loop gains control). */
     if (g_abort_redirect >= 2) {
         static int s_exit_count = 0;
         s_exit_count++;
-        if (s_exit_count <= 3 && status != 0) {
-            fprintf(stderr, "[HLE] Game assertion exit(%d) #%d — continuing past assertion\n",
-                    status, s_exit_count);
-            fflush(stderr);
+        if (s_exit_count <= 200 && status != 0) {
+            if (s_exit_count <= 5 || (s_exit_count % 20) == 0) {
+                fprintf(stderr, "[HLE] Game assertion exit(%d) #%d — continuing past assertion\n",
+                        status, s_exit_count);
+                fflush(stderr);
+            }
             ctx->gpr[3] = 0;
             return 0;
         }
