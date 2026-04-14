@@ -54,7 +54,10 @@ def build_if(mn: str, rest: str) -> str | None:
         return f"if ({cond}) {{ ps3_indirect_call(ctx); DRAIN_TRAMPOLINE(ctx); return; }}"
 
 
-def patch_file(path: str) -> None:
+FUNC_RE = re.compile(r"^void (func_[0-9A-Fa-f]+)\(")
+
+
+def patch_file(path: str, only: set[str] | None = None) -> None:
     with open(path, "rb") as f:
         raw = f.read()
     text = raw.decode("latin-1")
@@ -62,27 +65,46 @@ def patch_file(path: str) -> None:
     replaced = 0
     skipped = 0
 
-    def replace(match: re.Match) -> str:
-        nonlocal replaced, skipped
-        mn = match.group("mn")
-        rest = match.group("rest") or ""
-        repl = build_if(mn, rest)
-        if repl is None:
-            skipped += 1
-            return match.group(0)
-        replaced += 1
-        return f"{match.group('prefix')}{repl}"
+    # Process line by line so we can track which function we're in.
+    out_lines: list[str] = []
+    cur_func: str | None = None
+    for line in text.splitlines(keepends=True):
+        m = FUNC_RE.match(line)
+        if m:
+            cur_func = m.group(1)
+        if cur_func == "" or (line.startswith("}") and cur_func is not None):
+            # End of function: update cur_func at next function entry.
+            pass
 
-    new_text = LINE_RE.sub(replace, text)
+        def replace(match: re.Match) -> str:
+            nonlocal replaced, skipped
+            if only is not None and cur_func not in only:
+                return match.group(0)
+            mn = match.group("mn")
+            rest = match.group("rest") or ""
+            repl = build_if(mn, rest)
+            if repl is None:
+                skipped += 1
+                return match.group(0)
+            replaced += 1
+            return f"{match.group('prefix')}{repl}"
+
+        out_lines.append(LINE_RE.sub(replace, line))
 
     with open(path, "wb") as f:
-        f.write(new_text.encode("latin-1"))
+        f.write("".join(out_lines).encode("latin-1"))
 
     print(f"Replaced {replaced} conditional returns, skipped {skipped}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: patch_blelr.py <ppu_recomp.cpp>", file=sys.stderr)
+    if len(sys.argv) < 2:
+        print("Usage: patch_blelr.py <ppu_recomp.cpp> [--only func1,func2,...]",
+              file=sys.stderr)
         sys.exit(2)
-    patch_file(sys.argv[1])
+    path = sys.argv[1]
+    only: set[str] | None = None
+    for arg in sys.argv[2:]:
+        if arg.startswith("--only="):
+            only = set(arg[len("--only="):].split(","))
+    patch_file(path, only)

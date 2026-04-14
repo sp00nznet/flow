@@ -103,8 +103,12 @@ extern "C" __declspec(thread) void (*g_trampoline_fn)(void*);
 extern "C" {
     jmp_buf g_abort_jmp;
     int g_abort_redirect = 0;
+    /* Second longjmp slot: game-main assertion → game-loop injection. */
+    jmp_buf g_loop_jmp;
+    int g_loop_jmp_set = 0;
 }
 extern "C" void func_000CB9CC(ppu_context* ctx);  /* game main */
+extern "C" void func_000CBF4C(ppu_context* ctx);  /* engine run/destroy wrapper → game loop injection */
 extern "C" void ps3_thread_entry(ppu_context* ctx);  /* thread entry trampoline */
 
 /* ---------------------------------------------------------------------------
@@ -687,21 +691,82 @@ int main(int argc, char* argv[])
             }, hReal, 0, NULL);
         }
 
+        /* Arm the game-main assertion bailout. If game main hits its SPU
+         * thread group join assertion (or any other exit(1) path), the
+         * sys_process_exit bridge longjmps here and we fall through to
+         * the game-loop injection below instead of looping on the same
+         * assertion 200 times. */
+        int loop_rc = setjmp(g_loop_jmp);
+        g_loop_jmp_set = 1;
+        if (loop_rc == 0) {
 #ifdef _WIN32
-        __try {
+            __try {
 #endif
-        ps3_trampoline_run(&ctx, (void(*)(void*))func_000CB9CC);
+            ps3_trampoline_run(&ctx, (void(*)(void*))func_000CB9CC);
 #ifdef _WIN32
-        } __except(EXCEPTION_EXECUTE_HANDLER) {
-            DWORD code = GetExceptionCode();
-            fprintf(stderr, "\n[CRASH] Exception 0x%08lX in game main\n", code);
-            fprintf(stderr, "[CRASH] Last CIA: 0x%08X, r1(SP)=0x%llX, r2(TOC)=0x%llX\n",
-                    ctx.cia, (unsigned long long)ctx.gpr[1], (unsigned long long)ctx.gpr[2]);
-            fprintf(stderr, "[CRASH] r3=0x%llX  r4=0x%llX  r13=0x%llX  LR=0x%llX\n",
-                    (unsigned long long)ctx.gpr[3], (unsigned long long)ctx.gpr[4],
-                    (unsigned long long)ctx.gpr[13], (unsigned long long)ctx.lr);
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                DWORD code = GetExceptionCode();
+                fprintf(stderr, "\n[CRASH] Exception 0x%08lX in game main\n", code);
+                fprintf(stderr, "[CRASH] Last CIA: 0x%08X, r1(SP)=0x%llX, r2(TOC)=0x%llX\n",
+                        ctx.cia, (unsigned long long)ctx.gpr[1], (unsigned long long)ctx.gpr[2]);
+                fprintf(stderr, "[CRASH] r3=0x%llX  r4=0x%llX  r13=0x%llX  LR=0x%llX\n",
+                        (unsigned long long)ctx.gpr[3], (unsigned long long)ctx.gpr[4],
+                        (unsigned long long)ctx.gpr[13], (unsigned long long)ctx.lr);
+            }
+#endif
+        } else {
+            fprintf(stderr, "[init] Game main assertion bailout — entering game-loop injection\n");
+            fflush(stderr);
         }
+        g_loop_jmp_set = 0;
+
+        /* Enter the game-loop injection directly. This is func_000CBF4C
+         * which wraps func_000C858C — the in-place injected while(1)
+         * loop that ticks the engine, calls render dispatch, pumps flips,
+         * and lets the D3D12 backend present. Its prerequisites (engine
+         * struct, vtable write) were set up by whatever func_000CB9CC
+         * managed to run before the assertion. Re-init the PPU context
+         * first so we start from a clean stack. */
+        {
+            ppu_context_init(&ctx);
+            ppu_set_stack(&ctx, stack_addr, FLOW_STACK_SIZE);
+            ctx.gpr[2]  = 0x008969A8;
+            ctx.gpr[13] = 0x0F007000;
+            ctx.lr      = 0x008175FC;
+            uint64_t toc_be = _byteswap_uint64(ctx.gpr[2]);
+            memcpy(vm_base + (uint32_t)ctx.gpr[1] + 0x28, &toc_be, 8);
+
+            /* Plant the engine pointer at the BSS slot that TOC-0x55EC
+             * indexes into. func_000CB9CC normally writes it during its
+             * init chain, but the SPU assertion longjmps out before it
+             * gets there. Without this, the injection's engine-vtable
+             * dispatch reads a NULL engine and no draws are produced.
+             *
+             * The engine object was allocated at 0x00A000C0 by
+             * func_006D1F9C + func_000C61CC (operator new + constructor).
+             * The BSS holder slot at guest 0x10163764 is what
+             * `vm_read32(TOC-0x55EC)` returns. */
+            extern uint32_t vm_read32(uint64_t addr);
+            extern void vm_write32(uint64_t addr, uint32_t val);
+            uint32_t eng_holder_ptr = vm_read32(0x00008969A8ULL + (uint32_t)(int32_t)-0x55EC);
+            if (eng_holder_ptr) {
+                vm_write32(eng_holder_ptr, 0x00A000C0);
+                fprintf(stderr, "[init] Planted engine ptr 0x00A000C0 at 0x%08X\n",
+                        eng_holder_ptr);
+                fflush(stderr);
+            }
+
+#ifdef _WIN32
+            __try {
 #endif
+            ps3_trampoline_run(&ctx, (void(*)(void*))func_000CBF4C);
+#ifdef _WIN32
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                DWORD code = GetExceptionCode();
+                fprintf(stderr, "\n[CRASH] Exception 0x%08lX in game loop\n", code);
+            }
+#endif
+        }
     }
 
     /* Cleanup */

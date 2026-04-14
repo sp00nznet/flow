@@ -155,6 +155,12 @@ static int64_t bridge_sys_initialize_tls(ppu_context* ctx)
 #include <setjmp.h>
 extern "C" jmp_buf g_abort_jmp;
 extern "C" int g_abort_redirect;
+/* Second longjmp slot: when the game main reaches an assertion, jump out
+ * of game main entirely and hand control back to main.cpp, which then
+ * invokes the game-loop injection (func_000CBF4C → func_000C858C)
+ * directly. Set by main.cpp via setjmp before calling func_000CB9CC. */
+extern "C" jmp_buf g_loop_jmp;
+extern "C" int g_loop_jmp_set;
 
 static int64_t bridge_sys_process_exit(ppu_context* ctx)
 {
@@ -181,14 +187,19 @@ static int64_t bridge_sys_process_exit(ppu_context* ctx)
         longjmp(g_abort_jmp, 1);
     }
 
-    /* Game main phase: the game's assertion handler calls exit(1) then
-     * exitspawn. Since exitspawn can't actually restart the process,
-     * returning from exit leads to a dead loop. Instead, halt cleanly
-     * after too many assertions. We catch up to 200 — the game's
-     * C++ exception handling sometimes takes many retries before
-     * finding its way to a stable state (e.g. after the placeholder
-     * render loop gains control). */
+    /* Game main phase: the game's assertion handler calls exit(1) on an
+     * init failure (SPU thread group join throw). Returning 0 just puts
+     * the game back in the same retry loop. Instead, longjmp out of game
+     * main entirely — main.cpp set g_loop_jmp before calling func_000CB9CC
+     * and will invoke the game-loop injection (func_000CBF4C) on the
+     * catch side, bypassing the broken init. */
     if (g_abort_redirect >= 2) {
+        if (g_loop_jmp_set && status != 0) {
+            fprintf(stderr, "[HLE] Game main assertion — longjmp to game loop injection\n");
+            fflush(stderr);
+            g_loop_jmp_set = 0;
+            longjmp(g_loop_jmp, 1);
+        }
         static int s_exit_count = 0;
         s_exit_count++;
         if (s_exit_count <= 200 && status != 0) {
