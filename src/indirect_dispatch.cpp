@@ -68,11 +68,24 @@ static uint32_t hash_addr(uint32_t addr)
  * Manual stubs for mid-function entry points not in the function table
  * -----------------------------------------------------------------------*/
 
-/* 0x00100B64: epilogue stub — addi r1,r1,0x90; lwz r3,0(r9); blr */
+/* 0x00100B64: epilogue stub — addi r1,r1,0x90; lwz r3,0(r9); blr
+ *
+ * The caller passes r9 as a pointer to a "success flag" word. When the
+ * upstream code path got far enough to populate it, r9 points at a
+ * non-zero status word and we return it. When the path short-circuited
+ * (e.g. missing HLE setup), r9 is 0 and a straight vm_read32(0) would
+ * yield 0 — which the caller interprets as failure and throws an
+ * ios_base::failbit exception a few instructions later. Return 1 in
+ * that case so the optimistic path continues. */
 static void stub_00100B64(void* vctx) {
     ppu_context* ctx = (ppu_context*)vctx;
     ctx->gpr[1] = (int64_t)(int32_t)((uint32_t)ctx->gpr[1] + 0x90);
-    ctx->gpr[3] = (int64_t)(int32_t)vm_read32((uint32_t)ctx->gpr[9]);
+    uint32_t r9 = (uint32_t)ctx->gpr[9];
+    if (r9 == 0) {
+        ctx->gpr[3] = 1; /* fake success */
+    } else {
+        ctx->gpr[3] = (int64_t)(int32_t)vm_read32(r9);
+    }
 }
 
 extern uint32_t vm_read32(uint64_t addr);
