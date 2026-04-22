@@ -23,13 +23,32 @@
 extern "C" {
 #endif
 
-#define FLOW_LEVEL_MAX_FOODS 8
+#define FLOW_LEVEL_MAX_FOODS     8
+#define FLOW_LEVEL_MAX_CREATURES 8
 
 typedef struct FlowFoodFactory {
     int   num_objects;          /* lower bound of [m-n] range */
     char  food_type[32];        /* e.g. "CFoodBasicSegment" */
     int   num_nour;
 } FlowFoodFactory;
+
+/* CSnake/CJelly/CManta/CHunter share the same factory shape — we read
+ * them all into one array and tag with the kind. */
+typedef enum FlowCreatureKind {
+    FLOW_CREATURE_SNAKE  = 0,
+    FLOW_CREATURE_JELLY  = 1,
+    FLOW_CREATURE_MANTA  = 2,
+    FLOW_CREATURE_HUNTER = 3,
+} FlowCreatureKind;
+
+typedef struct FlowCreatureFactory {
+    int   kind;                 /* FlowCreatureKind */
+    int   num_objects;          /* how many of this creature */
+    int   num_segs;
+    float joint_dist;
+    float radius;
+    float max_speed;
+} FlowCreatureFactory;
 
 typedef struct FlowLevel {
     int   loaded;               /* 1 if parsed successfully */
@@ -46,11 +65,16 @@ typedef struct FlowLevel {
     int   particle_count;       /* sum of all CParticleHerd Number */
     char  particle_species[32]; /* primary species (last non-zero) */
 
-    /* Snake (single factory in C1_L3) */
+    /* Snake (single factory in C1_L3) — kept for back-compat with the
+     * earlier renderer; mirror of creatures[0] when kind==SNAKE. */
     int   snake_num_segs;       /* lower bound */
     float snake_joint_dist;
     float snake_radius;
     float snake_max_speed;
+
+    /* All creature factories (snake/jelly/manta/hunter) the level declares. */
+    int                  creature_count;
+    FlowCreatureFactory  creatures[FLOW_LEVEL_MAX_CREATURES];
 
     /* Food factories (concatenated across <CFoodFactory> entries) */
     int             food_factory_count;

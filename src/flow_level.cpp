@@ -238,20 +238,57 @@ static int parse_buffer(char* buf, size_t len)
     if (g_flow_level.particle_count == 0)
         g_flow_level.particle_count = 1800; /* fall back to default */
 
-    /* Snake — first CSnakeFactory only (most levels have just one).
-     * Default to 0 segments if no factory is present (some levels have a
-     * commented-out CSnakeFactory, or none at all). */
-    g_flow_level.snake_num_segs = 0;
-    if (find_element(buf, len, "CSnakeFactory", &abeg, &aend, &cont)) {
-        g_flow_level.snake_num_segs = 8;
-        if (attr_str(abeg, aend, "NumSegs", tmp, sizeof(tmp)))
-            g_flow_level.snake_num_segs = parse_range_int(tmp);
-        if (attr_str(abeg, aend, "JointDist", tmp, sizeof(tmp)))
-            g_flow_level.snake_joint_dist = parse_range_float(tmp);
-        if (attr_str(abeg, aend, "Radius", tmp, sizeof(tmp)))
-            g_flow_level.snake_radius = parse_range_float(tmp);
-        if (attr_str(abeg, aend, "MaxSpeed", tmp, sizeof(tmp)))
-            g_flow_level.snake_max_speed = parse_range_float(tmp);
+    /* Creatures — collect all CSnake/CJelly/CManta/CHunter factories.
+     * Each is the same shape: NumObjects, NumSegs, JointDist, Radius. */
+    g_flow_level.snake_num_segs  = 0;
+    g_flow_level.creature_count  = 0;
+    {
+        struct { const char* tag; int kind; } table[] = {
+            { "CSnakeFactory",  FLOW_CREATURE_SNAKE  },
+            { "CJellyFactory",  FLOW_CREATURE_JELLY  },
+            { "CMantaFactory",  FLOW_CREATURE_MANTA  },
+            { "CHunterFactory", FLOW_CREATURE_HUNTER },
+        };
+        for (size_t k = 0; k < sizeof(table)/sizeof(table[0]); k++) {
+            const char* search    = buf;
+            size_t       remaining = len;
+            while (search < buf + len &&
+                   g_flow_level.creature_count < FLOW_LEVEL_MAX_CREATURES &&
+                   find_element(search, remaining, table[k].tag,
+                                &abeg, &aend, &cont))
+            {
+                FlowCreatureFactory& C = g_flow_level.creatures[g_flow_level.creature_count];
+                C.kind        = table[k].kind;
+                C.num_objects = 1;
+                C.num_segs    = 8;
+                C.joint_dist  = 13.5f;
+                C.radius      = 13.5f;
+                C.max_speed   = 100.0f;
+                if (attr_str(abeg, aend, "NumObjects", tmp, sizeof(tmp)))
+                    C.num_objects = parse_range_int(tmp);
+                if (attr_str(abeg, aend, "NumSegs", tmp, sizeof(tmp)))
+                    C.num_segs    = parse_range_int(tmp);
+                if (attr_str(abeg, aend, "JointDist", tmp, sizeof(tmp)))
+                    C.joint_dist  = parse_range_float(tmp);
+                if (attr_str(abeg, aend, "Radius", tmp, sizeof(tmp)))
+                    C.radius      = parse_range_float(tmp);
+                if (attr_str(abeg, aend, "MaxSpeed", tmp, sizeof(tmp)))
+                    C.max_speed   = parse_range_float(tmp);
+                /* First snake also fills the legacy snake_* fields used
+                 * by the earlier renderer path. */
+                if (table[k].kind == FLOW_CREATURE_SNAKE &&
+                    g_flow_level.snake_num_segs == 0)
+                {
+                    g_flow_level.snake_num_segs   = C.num_segs;
+                    g_flow_level.snake_joint_dist = C.joint_dist;
+                    g_flow_level.snake_radius     = C.radius;
+                    g_flow_level.snake_max_speed  = C.max_speed;
+                }
+                g_flow_level.creature_count++;
+                search    = cont;
+                remaining = (buf + len) - search;
+            }
+        }
     }
 
     /* Food factories — gather up to FLOW_LEVEL_MAX_FOODS. */
@@ -354,7 +391,7 @@ int flow_level_load(const char* level_path)
         fprintf(stderr,
                 "[level] Loaded %s\n"
                 "[level]   gradient bot=(%.2f,%.2f,%.2f) mid=(%.2f,%.2f,%.2f) top=(%.2f,%.2f,%.2f) glow=%.2f\n"
-                "[level]   particles=%d (%s) snake_segs=%d r=%.1f food_factories=%d total_food=%d\n",
+                "[level]   particles=%d (%s) snake_segs=%d r=%.1f food_factories=%d total_food=%d creatures=%d\n",
                 resolved,
                 g_flow_level.bot_color[0], g_flow_level.bot_color[1], g_flow_level.bot_color[2],
                 g_flow_level.mid_color[0], g_flow_level.mid_color[1], g_flow_level.mid_color[2],
@@ -362,7 +399,14 @@ int flow_level_load(const char* level_path)
                 g_flow_level.glow,
                 g_flow_level.particle_count, g_flow_level.particle_species,
                 g_flow_level.snake_num_segs, g_flow_level.snake_radius,
-                g_flow_level.food_factory_count, g_flow_level.total_food);
+                g_flow_level.food_factory_count, g_flow_level.total_food,
+                g_flow_level.creature_count);
+        for (int ci = 0; ci < g_flow_level.creature_count; ci++) {
+            const FlowCreatureFactory& C = g_flow_level.creatures[ci];
+            const char* knames[] = {"snake","jelly","manta","hunter"};
+            fprintf(stderr, "[level]   creature[%d]=%s n=%d segs=%d jdist=%.1f r=%.1f\n",
+                    ci, knames[C.kind & 3], C.num_objects, C.num_segs, C.joint_dist, C.radius);
+        }
         fflush(stderr);
     }
     return parsed;
