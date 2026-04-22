@@ -8,6 +8,7 @@
 
 #include "config.h"
 #include "elf_loader.h"
+#include "flow_level.h"
 
 /* ps3recomp runtime headers */
 #include <ps3emu/ps3types.h>
@@ -94,6 +95,12 @@ extern "C" void rsx_d3d12_backend_present(void);
 
 /* Force escape flag for CTR=0 spin detection (from ppu_recomp.cpp) */
 extern "C" volatile int g_force_escape;
+
+/* GCM context guest pointer (from hle_modules.cpp). We synthesize a context
+ * before entering the game-loop injection because the SPU assertion bypass
+ * jumps over the real cellGcmInit call. */
+extern "C" uint32_t g_gcm_context_guest;
+extern "C" void hle_gcm_install_cmdbuf(uint32_t ctx_addr, uint32_t buf_addr, uint32_t buf_size);
 
 /* Trampoline continuation (from indirect_dispatch.cpp) */
 extern "C" __declspec(thread) void (*g_trampoline_fn)(void*);
@@ -261,6 +268,14 @@ int main(int argc, char* argv[])
     /* 4. Set up filesystem path mapping. */
     snprintf(g_sys_fs_root, sizeof(g_sys_fs_root), "%s", game_dir);
     printf("[init] Filesystem root: %s\n", g_sys_fs_root);
+
+    /* 4a. Load Campaign_1 / Level 3 XML. The renderer reads g_flow_level for
+     * gradient colors, particle counts, snake config and food counts so the
+     * scene matches the real level data instead of hardcoded literals. */
+    if (!flow_level_load_campaign(1, 3)) {
+        flow_level_reset_defaults();
+        printf("[init] Level XML not found — using built-in defaults\n");
+    }
 
     /* 4. Initialize stack allocator. */
     vm_stack_alloc_init(&g_vm_stack_alloc);
@@ -753,6 +768,37 @@ int main(int argc, char* argv[])
                 vm_write32(eng_holder_ptr, 0x00A000C0);
                 fprintf(stderr, "[init] Planted engine ptr 0x00A000C0 at 0x%08X\n",
                         eng_holder_ptr);
+                fflush(stderr);
+            }
+
+            /* Synthesize a CellGcmContextData. Game main asserts before
+             * cellGcmInit runs (SPU thread group join), so g_gcm_context_guest
+             * stays 0 and the per-frame scene injection in func_000C858C has
+             * no command buffer to write to. Allocate a dedicated 1 MB buffer
+             * at a fixed guest address (0x02500000) plus a 32-byte context
+             * header so the renderer's vm_read32(0x101ED198) chain resolves
+             * to a real, writable buffer.
+             *
+             * Layout matches what cellGcmInitBody installs:
+             *   ctx+0x00 callback (we leave 0; we never overflow)
+             *   ctx+0x04 begin
+             *   ctx+0x08 end
+             *   ctx+0x0C current
+             */
+            if (g_gcm_context_guest == 0) {
+                const uint32_t buf_addr = 0x02500000;
+                const uint32_t buf_size = 0x100000; /* 1 MB */
+                const uint32_t ctx_addr = 0x024FFFC0; /* just below buffer */
+                vm_write32(ctx_addr + 0x00, 0);
+                vm_write32(ctx_addr + 0x04, buf_addr);
+                vm_write32(ctx_addr + 0x08, buf_addr + buf_size);
+                vm_write32(ctx_addr + 0x0C, buf_addr);
+                hle_gcm_install_cmdbuf(ctx_addr, buf_addr, buf_size);
+                /* Write the context pointer into the gCellGcmCurrentContext
+                 * BSS slot at 0x101ED198 (referenced by TOC-0x2A50). */
+                vm_write32(0x101ED198, ctx_addr);
+                fprintf(stderr, "[init] Synthesized GCM context ctx=0x%08X buf=0x%08X-0x%08X (%u KB)\n",
+                        ctx_addr, buf_addr, buf_addr + buf_size, buf_size / 1024);
                 fflush(stderr);
             }
 

@@ -105,6 +105,7 @@ add_executable(flow
     src/malloc_override.cpp
     src/run_ctors.cpp
     src/indirect_dispatch.cpp
+    src/flow_level.cpp
     ${RECOMP_SOURCES}
 )
 
