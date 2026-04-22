@@ -890,11 +890,21 @@ extern "C" {
     void hle_guest_malloc(ppu_context* ctx); /* from malloc_override.cpp */
 }
 
-/* Guest command buffer state — tracked for flushing */
+/* Guest command buffer state — tracked for flushing.
+ * The cmdbuf_begin/size are also written by hle_gcm_set_cmdbuf() so the
+ * SPU-bypass path can install a synthesized GCM context without going
+ * through cellGcmInitBody. */
 extern "C" uint32_t g_gcm_context_guest = 0;  /* guest addr of CellGcmContextData */
-static uint32_t g_gcm_cmdbuf_begin  = 0;  /* guest addr of command buffer start */
-static uint32_t g_gcm_cmdbuf_size   = 0;  /* command buffer size in bytes */
+extern "C" uint32_t g_gcm_cmdbuf_begin  = 0;  /* guest addr of command buffer start */
+extern "C" uint32_t g_gcm_cmdbuf_size   = 0;  /* command buffer size in bytes */
 static uint32_t g_gcm_callback_opd  = 0;  /* guest addr of callback OPD entry */
+
+extern "C" void hle_gcm_install_cmdbuf(uint32_t ctx_addr, uint32_t buf_addr, uint32_t buf_size)
+{
+    g_gcm_context_guest = ctx_addr;
+    g_gcm_cmdbuf_begin  = buf_addr;
+    g_gcm_cmdbuf_size   = buf_size;
+}
 
 /* Guest address for the GCM control register mirror */
 extern "C" uint32_t g_gcm_control_guest = 0;
