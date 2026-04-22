@@ -167,9 +167,34 @@ static int find_element(const char* buf, size_t len, const char* tag,
  * Public API
  * -----------------------------------------------------------------------*/
 
-static int parse_buffer(const char* buf, size_t len)
+/* Replace `<!-- ... -->` regions with spaces so the attribute scanner
+ * doesn't pick up commented-out elements (e.g. L1 keeps a commented
+ * CSnakeFactory which we used to parse as a live one). Operates in place. */
+static void strip_xml_comments(char* buf, size_t len)
+{
+    char* p = buf;
+    char* end = buf + len;
+    while (p + 4 <= end) {
+        if (p[0] == '<' && p[1] == '!' && p[2] == '-' && p[3] == '-') {
+            char* q = p + 4;
+            while (q + 3 <= end &&
+                   !(q[0] == '-' && q[1] == '-' && q[2] == '>')) {
+                if (*q != '\n') *q = ' ';
+                q++;
+            }
+            *p = ' '; *(p+1) = ' '; *(p+2) = ' '; *(p+3) = ' ';
+            if (q + 3 <= end) { *q = ' '; *(q+1) = ' '; *(q+2) = ' '; }
+            p = q + 3;
+        } else {
+            p++;
+        }
+    }
+}
+
+static int parse_buffer(char* buf, size_t len)
 {
     flow_level_reset_defaults();
+    strip_xml_comments(buf, len);
 
     char tmp[128];
 
@@ -213,8 +238,12 @@ static int parse_buffer(const char* buf, size_t len)
     if (g_flow_level.particle_count == 0)
         g_flow_level.particle_count = 1800; /* fall back to default */
 
-    /* Snake — first CSnakeFactory only (most levels have just one). */
+    /* Snake — first CSnakeFactory only (most levels have just one).
+     * Default to 0 segments if no factory is present (some levels have a
+     * commented-out CSnakeFactory, or none at all). */
+    g_flow_level.snake_num_segs = 0;
     if (find_element(buf, len, "CSnakeFactory", &abeg, &aend, &cont)) {
+        g_flow_level.snake_num_segs = 8;
         if (attr_str(abeg, aend, "NumSegs", tmp, sizeof(tmp)))
             g_flow_level.snake_num_segs = parse_range_int(tmp);
         if (attr_str(abeg, aend, "JointDist", tmp, sizeof(tmp)))
