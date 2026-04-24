@@ -303,6 +303,58 @@ def patch_malloc(recomp_dir: str) -> int:
     return 1
 
 
+def patch_crt_assert(recomp_dir: str) -> int:
+    """Stub func_006B6C80, the CRT assertion-printer wrapper.
+
+    Fires from inside fopen when an internal precondition (a CRT lock or
+    FILE-table slot we never initialised because of the SPU bypass) fails.
+    The default behaviour is to print "abort() is called from..." via
+    sys_tty_write and then sys_process_exit(1) — which kills the redirect
+    chain and forces the game-loop fallback.
+
+    Stubbing it so fopen returns gracefully (returning 0/NULL up the call
+    chain) lets the caller's own "if (fp == NULL) return" path handle the
+    failure. Concretely this unblocks func_000CBFE4 -> func_0070C248
+    (cellGcmInit), which currently never runs.
+    """
+    cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
+    with open(cpp_path, "rb") as f:
+        data = f.read()
+
+    target = b"void func_006B6C80(ppu_context* ctx) {"
+    idx = data.find(target)
+    if idx < 0:
+        print("  func_006B6C80 not found — skipping crt-assert patch")
+        return 0
+
+    end = data.find(b"\nvoid func_", idx + 100)
+    if end < 0:
+        print("  Could not find end of func_006B6C80")
+        return 0
+
+    new_func = (
+        b"void func_006B6C80(ppu_context* ctx) {\n"
+        b"    /* PATCHED (wake-init): CRT abort-printer wrapper no-op.\n"
+        b"     * See post_lift.patch_crt_assert. Return 0 in r3 so the\n"
+        b"     * caller's NULL-check path handles the failure cleanly. */\n"
+        b"    static int s_log = 0;\n"
+        b"    if (s_log++ < 4) {\n"
+        b"        fprintf(stderr, \"[WAKE-INIT] Skipping CRT assert (func_006B6C80) call #%d\\n\", s_log);\n"
+        b"        fflush(stderr);\n"
+        b"    }\n"
+        b"    ctx->gpr[3] = 0;\n"
+        b"}\n"
+    )
+
+    data = data[:idx] + new_func + data[end:]
+
+    with open(cpp_path, "wb") as f:
+        f.write(data)
+
+    print("  Patched func_006B6C80 -> wake-init no-op (CRT assert)")
+    return 1
+
+
 def patch_wake_init(recomp_dir: str) -> int:
     """Stub func_006CDE50 (the std::cin/cout/cerr/clog stream binder).
 
@@ -401,6 +453,9 @@ def main():
 
     print("\n6. Patching wake-init (stub stream binder)")
     patch_wake_init(recomp_dir)
+
+    print("\n7. Patching CRT assert wrapper (wake fopen)")
+    patch_crt_assert(recomp_dir)
 
     print_stats(recomp_dir)
     print("\nDone! Ready to build.")
