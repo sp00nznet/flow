@@ -155,6 +155,7 @@ static int64_t bridge_sys_initialize_tls(ppu_context* ctx)
 #include <setjmp.h>
 extern "C" jmp_buf g_abort_jmp;
 extern "C" int g_abort_redirect;
+extern "C" const char* failbit_resolve_rip(void* rip, uint32_t* out_guest);
 /* Second longjmp slot: when the game main reaches an assertion, jump out
  * of game main entirely and hand control back to main.cpp, which then
  * invokes the game-loop injection (func_000CBF4C → func_000C858C)
@@ -175,6 +176,28 @@ static int64_t bridge_sys_process_exit(ppu_context* ctx)
     for (int i = 0; i < 16; i++) {
         uint32_t val = vm_read32(sp + i * 4);
         fprintf(stderr, "    SP+0x%02X: 0x%08X\n", i * 4, val);
+    }
+    /* Host backtrace — same trick we used at the failbit-throw site.
+     * Resolve each frame to a guest function so we can walk back to the
+     * actual abort source. Limit to the first few exit calls so the log
+     * doesn't blow up on retry loops. */
+    {
+        static int s_bt = 0;
+        if (s_bt < 4) {
+            s_bt++;
+            void* frames[24];
+            USHORT n = RtlCaptureStackBackTrace(0, 24, frames, NULL);
+            uintptr_t base = (uintptr_t)GetModuleHandleA(NULL);
+            fprintf(stderr, "[ABORT-BT] HOST stack (%u frames):\n", n);
+            for (USHORT i = 0; i < n && i < 18; i++) {
+                uintptr_t rip = (uintptr_t)frames[i];
+                uint32_t guest = 0;
+                const char* nm = failbit_resolve_rip(frames[i], &guest);
+                fprintf(stderr, "[ABORT-BT]   #%2u exe+0x%llX  guest=%s (0x%08X)\n",
+                        (unsigned)i, (unsigned long long)(rip - base),
+                        nm ? nm : "?", guest);
+            }
+        }
     }
     fflush(stderr);
 
