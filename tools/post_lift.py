@@ -303,6 +303,57 @@ def patch_malloc(recomp_dir: str) -> int:
     return 1
 
 
+def patch_wake_init(recomp_dir: str) -> int:
+    """Stub func_006CDE50 (the std::cin/cout/cerr/clog stream binder).
+
+    Multiple ios_base::Init wrappers (one per TU using <iostream>) call
+    this function. It tries to bind the standard streams to stdin/stdout/
+    stderr file descriptors that don't exist in our recompiled environment,
+    sets failbit, and the unhandled std::ios_base::failure exception aborts
+    the CRT — which is how we ended up needing the SPU/longjmp bypass.
+
+    Game code never reads from cin or writes to cout (it uses PhyreEngine
+    logging), so leaving the streams unbound is safe. Stubbing this one
+    function lets static-init complete normally and unblocks deeper init
+    (cellSysmodule loads, engine construction, etc.). See
+    memory/project_flow_recomp.md "Proper-Init Wake" for the trace.
+    """
+    cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
+    with open(cpp_path, "rb") as f:
+        data = f.read()
+
+    target = b"void func_006CDE50(ppu_context* ctx) {"
+    idx = data.find(target)
+    if idx < 0:
+        print("  func_006CDE50 not found — skipping wake-init patch")
+        return 0
+
+    end = data.find(b"\nvoid func_", idx + 100)
+    if end < 0:
+        print("  Could not find end of func_006CDE50")
+        return 0
+
+    new_func = (
+        b"void func_006CDE50(ppu_context* ctx) {\n"
+        b"    /* PATCHED (wake-init): stream binder no-op. See post_lift.patch_wake_init. */\n"
+        b"    static int s_log = 0;\n"
+        b"    if (s_log++ == 0) {\n"
+        b"        fprintf(stderr, \"[WAKE-INIT] Skipping stream binder (func_006CDE50)\\n\");\n"
+        b"        fflush(stderr);\n"
+        b"    }\n"
+        b"    ctx->gpr[3] = 0;\n"
+        b"}\n"
+    )
+
+    data = data[:idx] + new_func + data[end:]
+
+    with open(cpp_path, "wb") as f:
+        f.write(data)
+
+    print("  Patched func_006CDE50 -> wake-init no-op (skips std stream binding)")
+    return 1
+
+
 def print_stats(recomp_dir: str) -> None:
     """Print statistics about the recompiled code."""
     cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
@@ -347,6 +398,9 @@ def main():
 
     print("\n5. Patching malloc -> HLE bump allocator")
     patch_malloc(recomp_dir)
+
+    print("\n6. Patching wake-init (stub stream binder)")
+    patch_wake_init(recomp_dir)
 
     print_stats(recomp_dir)
     print("\nDone! Ready to build.")

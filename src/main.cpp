@@ -67,6 +67,29 @@ struct RecompiledFunc {
 
 extern "C" const RecompiledFunc g_recompiled_funcs[];
 extern "C" const size_t         g_recompiled_func_count;
+
+/* RIP -> nearest recompiled guest function. Used by debugging hooks
+ * outside this TU (e.g. failbit-throw stack trace in ppu_recomp.cpp). */
+extern "C" const char* failbit_resolve_rip(void* rip, uint32_t* out_guest)
+{
+    uintptr_t target = (uintptr_t)rip;
+    const char* best_name = nullptr;
+    uint32_t    best_addr = 0;
+    uintptr_t   best_d    = (uintptr_t)-1;
+    for (size_t i = 0; i < g_recompiled_func_count; i++) {
+        uintptr_t hf = (uintptr_t)g_recompiled_funcs[i].host_func;
+        if (hf <= target) {
+            uintptr_t d = target - hf;
+            if (d < best_d) {
+                best_d = d;
+                best_name = g_recompiled_funcs[i].name;
+                best_addr = g_recompiled_funcs[i].guest_addr;
+            }
+        }
+    }
+    if (out_guest) *out_guest = best_addr;
+    return best_name;
+}
 extern "C" void recomp_game_main(void* ctx);
 extern "C" void flow_register_hle_modules(void);
 extern "C" void ps3_trampoline_run(ppu_context* ctx, void (*func)(void*));
