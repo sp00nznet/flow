@@ -1544,8 +1544,16 @@ static int64_t bridge_cellGcmGetTiledPitchSize(ppu_context* ctx)
 extern "C" int rsx_process_command_buffer(void* state, const uint32_t* buf, uint32_t size);
 extern "C" void rsx_state_init(void* state);
 
-/* RSX state — initialized once, updated by command buffer processing */
-static uint8_t s_rsx_state_buf[4096]; /* rsx_state is large, use static buffer */
+/* RSX state — initialized once, updated by command buffer processing.
+ *
+ * sizeof(rsx_state) in the runtime is ~10 KB (it contains
+ * vertex_constants[512][4] = 8 KB on its own). The previous 4 KB buffer
+ * here was way too small: rsx_state_init's memset(state, 0, sizeof) wrote
+ * 6 KB past the end of this buffer into adjacent host BSS, periodically
+ * zeroing mod_cellSysutil and breaking NID lookups. Caught with a
+ * DR0/DR7 watchpoint (commit 5f1b52e). Bumped to 64 KB so we never face
+ * the same issue again as the rsx_state grows. */
+static uint8_t s_rsx_state_buf[65536];
 static int s_rsx_state_inited = 0;
 
 static void gcm_flush_guest_cmdbuf_impl(int reset_current);
