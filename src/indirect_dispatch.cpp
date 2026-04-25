@@ -70,13 +70,35 @@ static uint32_t hash_addr(uint32_t addr)
 
 /* 0x00100B64: epilogue stub — addi r1,r1,0x90; lwz r3,0(r9); blr
  *
- * The caller passes r9 as a pointer to a "success flag" word. When the
- * upstream code path got far enough to populate it, r9 points at a
- * non-zero status word and we return it. When the path short-circuited
- * (e.g. missing HLE setup), r9 is 0 and a straight vm_read32(0) would
- * yield 0 — which the caller interprets as failure and throws an
- * ios_base::failbit exception a few instructions later. Return 1 in
- * that case so the optimistic path continues. */
+ * The full disassembly around 0x00100B64:
+ *
+ *   0x00100B3C  lbz   r0,0(r29)        ; init flag byte
+ *   0x00100B40  extsb r31,r0
+ *   0x00100B44  cmpwi cr7,r31,0
+ *   0x00100B48  beq   cr7,+0x28        ; if !inited, take init path
+ *   0x00100B4C  lwz   r9,-0x7F40(r30)  ; r9 = *(TOC-0x7F40) — global slot
+ *   0x00100B50  ld    r0,0xA0(r1)      ; restore LR
+ *   0x00100B54  ld    r29,0x78(r1)
+ *   0x00100B58  ld    r30,0x80(r1)
+ *   0x00100B5C  mtlr  r0
+ *   0x00100B60  ld    r31,0x88(r1)
+ *   0x00100B64  addi  r1,r1,0x90       ; <<< STUB ENTRY
+ *   0x00100B68  lwz   r3,0(r9)         ;   r3 = *r9
+ *   0x00100B6C  blr                    ;   return
+ *
+ * The caller checks `r3 != 0`; if zero it constructs and throws a
+ * `std::ios_base::failure("ios_base::failbit set")` and the C++ runtime
+ * aborts the process. We've seen two failure modes:
+ *   (a) r9 == 0 — upstream skipped its TOC load entirely
+ *   (b) r9 is a heap address but *r9 is 0 — slot was allocated but
+ *       never populated (init path didn't reach it before something
+ *       else triggered the optimistic path).
+ *
+ * Either way the recompiler-side workaround is the same: hand back a
+ * non-zero status so the optimistic path keeps running. The "real"
+ * value would come from full PhyreEngine init, which the SPU bypass
+ * skipped — until that's solved, returning 1 here is the cheapest way
+ * to keep the loop alive. */
 static void stub_00100B64(void* vctx) {
     ppu_context* ctx = (ppu_context*)vctx;
     ctx->gpr[1] = (int64_t)(int32_t)((uint32_t)ctx->gpr[1] + 0x90);
