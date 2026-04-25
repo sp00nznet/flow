@@ -2521,3 +2521,44 @@ extern "C" void flow_register_hle_modules(void)
     printf("[init]                 cellPad, cellFs, sysPrxForUser (lwmutex, threads)\n");
     printf("[init]   Stubs:        cellSpurs, cellSync, cellNetCtl, sceNp, sys_net\n");
 }
+
+/* Self-heal: re-initialise any module struct in the registry whose
+ * host memory has been zeroed mid-run. Walks the existing registry,
+ * finds slots with NULL name, and replays the matching register_xxx().
+ * The registry slot's pointer is left unchanged so we don't push a
+ * duplicate entry — only the underlying struct is rebuilt in place. */
+extern "C" int flow_repair_hle_modules(void)
+{
+    int repaired = 0;
+    for (uint32_t i = 0; i < g_ps3_module_registry.count; i++) {
+        ps3_module* m = g_ps3_module_registry.modules[i];
+        if (m && m->name != NULL) continue;
+        /* m->name is NULL — struct was wiped. Identify by address and
+         * re-init. We only have an address here, not the original name,
+         * so map by pointer to the static module symbol. */
+        ps3_module* prev_count_save = NULL;
+        uint32_t saved_count = g_ps3_module_registry.count;
+        if      (m == &mod_cellSysutil)  register_cellSysutil();
+        else if (m == &mod_cellGcmSys)   register_cellGcmSys();
+        else if (m == &mod_cellSysmodule) register_cellSysmodule();
+        else if (m == &mod_cellSpurs)    register_cellSpurs();
+        else if (m == &mod_cellAudio)    register_cellAudio();
+        else if (m == &mod_cellSync)     register_cellSync();
+        else if (m == &mod_cellNetCtl)   register_cellNetCtl();
+        else if (m == &mod_sceNp)        register_sceNp();
+        else if (m == &mod_sys_net)      register_sys_net();
+        else if (m == &mod_sys_io)       register_sys_io();
+        else if (m == &mod_sys_fs)       register_sys_fs();
+        else if (m == &mod_sysPrxForUser) register_sysPrxForUser();
+        else continue;
+        /* register_xxx() called ps3_register_module() which appended a
+         * new pointer to the same struct — rewind so we don't grow. */
+        g_ps3_module_registry.count = saved_count;
+        (void)prev_count_save;
+        fprintf(stderr, "[HLE-REPAIR] Re-registered module slot %u ('%s' funcs=%u)\n",
+                i, m->name ? m->name : "?", m->func_table.count);
+        fflush(stderr);
+        repaired++;
+    }
+    return repaired;
+}

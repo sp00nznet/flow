@@ -8,6 +8,7 @@
 #endif
 
 extern "C" const char* failbit_resolve_rip(void* rip, uint32_t* out_guest);
+extern "C" int flow_repair_hle_modules(void);
 
 /* NID dispatch: look up handler and call it.
  *
@@ -25,6 +26,13 @@ static void nid_dispatch(ppu_context* ctx, uint32_t nid, const char* name) {
     vm_write64((uint32_t)ctx->gpr[1] + 0x10, ctx->lr);
 
     void* handler = ps3_resolve_func_nid(nid);
+    if (!handler) {
+        /* Self-heal: an HLE module's host BSS occasionally gets zeroed
+         * (root cause TBD; see commit c2dbdf2 diagnostic). Re-init any
+         * wiped module structs and retry the lookup once. */
+        if (flow_repair_hle_modules() > 0)
+            handler = ps3_resolve_func_nid(nid);
+    }
     if (handler) {
         fprintf(stderr, "[HLE] %s\n", name);
         int64_t rc = ((int64_t(*)(ppu_context*))handler)(ctx);
