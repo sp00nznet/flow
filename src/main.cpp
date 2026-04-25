@@ -68,8 +68,102 @@ struct RecompiledFunc {
 extern "C" const RecompiledFunc g_recompiled_funcs[];
 extern "C" const size_t         g_recompiled_func_count;
 
+#include <ps3emu/module.h>
+extern "C" const char* failbit_resolve_rip(void* rip, uint32_t* out_guest);
+
+/* Watchpoint plumbing: g_watch_addr is set by the runtime when we install
+ * a write-watchpoint via debug registers; the VEH then checks every
+ * single-step / debug exception against it and logs the writer's RIP. */
+extern "C" volatile uint64_t g_watch_addr = 0;
+extern "C" volatile size_t   g_watch_size = 0;
+
+/* Install a hardware write-watchpoint of the given size (1, 2, 4 or 8) on
+ * `addr`. Uses DR0 + DR7 condition bits; only one watchpoint at a time. */
+extern "C" int flow_install_watchpoint(void* addr, size_t size)
+{
+    if (size != 1 && size != 2 && size != 4 && size != 8) return -1;
+    g_watch_addr = (uint64_t)addr;
+    g_watch_size = size;
+    HANDLE h = GetCurrentThread();
+    CONTEXT c = {}; c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    if (!GetThreadContext(h, &c)) return -2;
+    c.Dr0 = (uintptr_t)addr;
+    /* DR7: enable DR0 (bit 0=L0=1), condition LEN/RW for DR0:
+     *   bits 16-17: R/W field (00=exec, 01=write, 10=I/O, 11=read/write)
+     *   bits 18-19: LEN field (00=1B, 01=2B, 10=8B, 11=4B)
+     */
+    uint64_t rw = 0x1;             /* write only */
+    uint64_t len = (size == 1) ? 0 :
+                   (size == 2) ? 1 :
+                   (size == 4) ? 3 : 2;  /* 8 */
+    c.Dr7 = (c.Dr7 & ~0xFFFFul) | 0x1 | (rw << 16) | (len << 18);
+    c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    if (!SetThreadContext(h, &c)) return -3;
+    fprintf(stderr, "[WATCH] Installed write watchpoint at %p (size=%zu)\n", addr, size);
+    fflush(stderr);
+    return 0;
+}
+
+/* VEH that catches the watchpoint hit and logs the writer's RIP. */
+static LONG WINAPI flow_watch_veh(EXCEPTION_POINTERS* ep)
+{
+    if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP) return EXCEPTION_CONTINUE_SEARCH;
+    /* DR6 bit 0 set → DR0 hit. */
+    if ((ep->ContextRecord->Dr6 & 0x1) == 0) return EXCEPTION_CONTINUE_SEARCH;
+
+    HMODULE hm = NULL;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                       (LPCSTR)ep->ContextRecord->Rip, &hm);
+    char modname[MAX_PATH] = "?";
+    if (hm) GetModuleFileNameA(hm, modname, sizeof(modname));
+    uintptr_t base = (uintptr_t)hm;
+
+    fprintf(stderr, "[WATCH-HIT] addr=0x%llX RIP=%p (%s+0x%llX)\n",
+            (unsigned long long)g_watch_addr, (void*)ep->ContextRecord->Rip,
+            modname, (unsigned long long)((uintptr_t)ep->ContextRecord->Rip - base));
+    /* Walk the host call stack — the immediate caller of the system
+     * memset/RtlZeroMemory is the bug we're hunting. */
+    void* frames[16];
+    USHORT n = RtlCaptureStackBackTrace(0, 16, frames, NULL);
+    HMODULE exe = GetModuleHandleA(NULL);
+    for (USHORT i = 0; i < n && i < 12; i++) {
+        HMODULE fhm = NULL;
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                           (LPCSTR)frames[i], &fhm);
+        char fmod[MAX_PATH] = "?";
+        if (fhm) GetModuleFileNameA(fhm, fmod, sizeof(fmod));
+        const char* tail = strrchr(fmod, '\\');
+        tail = tail ? tail+1 : fmod;
+        uintptr_t fb = (uintptr_t)fhm;
+        uint32_t guest = 0;
+        const char* nm = (fhm == exe)
+            ? failbit_resolve_rip(frames[i], &guest) : NULL;
+        fprintf(stderr, "[WATCH-HIT]   #%2u %s+0x%llX  guest=%s (0x%08X)\n",
+                (unsigned)i, tail,
+                (unsigned long long)((uintptr_t)frames[i] - fb),
+                nm ? nm : "-", guest);
+    }
+    fflush(stderr);
+
+    /* Clear DR0/DR7 so we don't loop on the same write — one-shot trap. */
+    ep->ContextRecord->Dr0 = 0;
+    ep->ContextRecord->Dr7 &= ~0xFFFFull;
+    /* Clear the DR6 status bit so single-step doesn't refire. */
+    ep->ContextRecord->Dr6 &= ~0xFull;
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+extern "C" void flow_install_watch_veh(void)
+{
+    AddVectoredExceptionHandler(1, flow_watch_veh);
+    fprintf(stderr, "[WATCH] VEH installed\n");
+    fflush(stderr);
+}
+
 /* RIP -> nearest recompiled guest function. Used by debugging hooks
- * outside this TU (e.g. failbit-throw stack trace in ppu_recomp.cpp). */
+ * outside this TU (e.g. failbit-throw stack trace in ppu_recomp.cpp).
+ * Returns the symbol if delta < 16 KB (real match) so callers don't get
+ * misleading nearest-below names from huge deltas. */
 extern "C" const char* failbit_resolve_rip(void* rip, uint32_t* out_guest)
 {
     uintptr_t target = (uintptr_t)rip;
@@ -88,6 +182,11 @@ extern "C" const char* failbit_resolve_rip(void* rip, uint32_t* out_guest)
         }
     }
     if (out_guest) *out_guest = best_addr;
+    /* Delta over 64 KB → not actually inside that function. */
+    if (best_d > 65536) {
+        if (out_guest) *out_guest = 0;
+        return nullptr;
+    }
     return best_name;
 }
 extern "C" void recomp_game_main(void* ctx);
@@ -280,6 +379,17 @@ int main(int argc, char* argv[])
 
     /* 3. Register HLE modules (NID-based import resolution). */
     flow_register_hle_modules();
+
+    /* 3a. Install a hardware write-watchpoint on mod_cellSysutil.name so
+     * we can catch the writer that zeroes it mid-run. The address comes
+     * from the layout dump at the start of flow_register_hle_modules. */
+    if (g_ps3_module_registry.count > 0) {
+        ps3_module* m = g_ps3_module_registry.modules[0];
+        flow_install_watch_veh();
+        /* Watch the .name field (first 8 bytes); becoming NULL is the
+         * primary symptom of the corruption. */
+        flow_install_watchpoint(&m->name, 8);
+    }
 
     /* 3b. Set thread entry trampoline for real multi-threading. */
     {
