@@ -2503,6 +2503,17 @@ extern "C" void flow_register_hle_modules(void)
     /* Initialize filesystem path translation */
     cellfs_set_root_path(FLOW_GAME_DIR);
 
+    /* Address-layout dump — helps diagnose the host-BSS corruption that
+     * zeroes mod_cellSysutil mid-run. Print the module addresses and the
+     * deltas from a couple of likely culprit symbols (vm_base, the
+     * dispatch table) so we can correlate with stray write addresses. */
+    fprintf(stderr, "[HLE-LAYOUT] mod_cellSysutil   = %p\n", (void*)&mod_cellSysutil);
+    fprintf(stderr, "[HLE-LAYOUT] mod_cellGcmSys    = %p (delta=%+lld)\n", (void*)&mod_cellGcmSys,
+            (long long)((char*)&mod_cellGcmSys - (char*)&mod_cellSysutil));
+    fprintf(stderr, "[HLE-LAYOUT] mod_cellSysmodule = %p (delta=%+lld)\n", (void*)&mod_cellSysmodule,
+            (long long)((char*)&mod_cellSysmodule - (char*)&mod_cellSysutil));
+    fflush(stderr);
+
     register_cellSysutil();
     register_cellGcmSys();
     register_cellSysmodule();
@@ -2533,6 +2544,13 @@ extern "C" int flow_repair_hle_modules(void)
     for (uint32_t i = 0; i < g_ps3_module_registry.count; i++) {
         ps3_module* m = g_ps3_module_registry.modules[i];
         if (m && m->name != NULL) continue;
+        /* Log the offset between the wiped struct and a known sibling
+         * — gives a hint at the corruption pattern. */
+        fprintf(stderr, "[HLE-REPAIR] Detected wipe at %p (slot %u). First 32 bytes:",
+                (void*)m, i);
+        for (int b = 0; b < 32; b++)
+            fprintf(stderr, " %02X", ((uint8_t*)m)[b]);
+        fprintf(stderr, "\n"); fflush(stderr);
         /* m->name is NULL — struct was wiped. Identify by address and
          * re-init. We only have an address here, not the original name,
          * so map by pointer to the static module symbol. */
