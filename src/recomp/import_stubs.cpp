@@ -3,6 +3,11 @@
 #include "ppu_recomp.h"
 #include "ps3emu/module.h"
 #include <stdio.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+extern "C" const char* failbit_resolve_rip(void* rip, uint32_t* out_guest);
 
 /* NID dispatch: look up handler and call it.
  *
@@ -26,6 +31,39 @@ static void nid_dispatch(ppu_context* ctx, uint32_t nid, const char* name) {
         /* If handler didn't set r3 itself, propagate C return value */
         (void)rc;
     } else {
+        /* Diagnostic: dump module registry state on first miss for this
+         * NID so we can see whether the relevant module is in the registry
+         * and whether it's still marked loaded. The miss happens after
+         * earlier calls succeed, suggesting the registry state is being
+         * mutated mid-run. */
+        static uint32_t s_seen_misses[64] = {};
+        bool first = true;
+        for (uint32_t i = 0; i < 64 && s_seen_misses[i]; i++) {
+            if (s_seen_misses[i] == nid) { first = false; break; }
+        }
+        if (first) {
+            for (uint32_t i = 0; i < 64; i++) {
+                if (!s_seen_misses[i]) { s_seen_misses[i] = nid; break; }
+            }
+#ifdef _WIN32
+            void* frames[8];
+            USHORT n = RtlCaptureStackBackTrace(0, 8, frames, NULL);
+            fprintf(stderr, "[HLE-MISS] %s NID=0x%08x — registry dump:\n", name, nid);
+            for (uint32_t i = 0; i < g_ps3_module_registry.count; i++) {
+                ps3_module* m = g_ps3_module_registry.modules[i];
+                fprintf(stderr, "  module[%u] '%s' loaded=%d funcs=%u\n",
+                        i, m->name, m->loaded, m->func_table.count);
+            }
+            fprintf(stderr, "[HLE-MISS] caller chain:\n");
+            for (USHORT i = 0; i < n; i++) {
+                uint32_t guest = 0;
+                const char* nm = failbit_resolve_rip(frames[i], &guest);
+                fprintf(stderr, "  #%u guest=%s (0x%08X)\n",
+                        i, nm ? nm : "?", guest);
+            }
+#endif
+            fflush(stderr);
+        }
         fprintf(stderr, "[HLE] UNIMPLEMENTED: %s (NID 0x%08x)\n", name, nid);
         ctx->gpr[3] = 0;  /* return CELL_OK for unknown NIDs */
     }
