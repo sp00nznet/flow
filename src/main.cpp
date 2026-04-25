@@ -143,6 +143,29 @@ static LONG WINAPI flow_watch_veh(EXCEPTION_POINTERS* ep)
                 (unsigned long long)((uintptr_t)frames[i] - fb),
                 nm ? nm : "-", guest);
     }
+    /* Dump host bytes around frame #5 (the recompiled-blob caller) so we
+     * can read the call-site instruction and identify what's being passed
+     * to memcpy/memset. RIP-32 .. RIP+8 = 40 bytes hex. */
+    if (n >= 6) {
+        uint8_t* p = (uint8_t*)frames[5];
+        fprintf(stderr, "[WATCH-HIT] frame#5 bytes -32..+8: ");
+        for (int b = -32; b <= 8; b++)
+            fprintf(stderr, "%02X ", p[b]);
+        fprintf(stderr, "\n");
+        /* Also dump the bytes around frame #6 — that's the host runtime
+         * helper that called into the recompiled blob. */
+        p = (uint8_t*)frames[6];
+        fprintf(stderr, "[WATCH-HIT] frame#6 bytes -32..+8: ");
+        for (int b = -32; b <= 8; b++)
+            fprintf(stderr, "%02X ", p[b]);
+        fprintf(stderr, "\n");
+    }
+    /* Also log key registers — the dest pointer should still be in rcx/rbx
+     * (system V → MS x64 ABI), and the "size" arg is in r8. */
+    fprintf(stderr, "[WATCH-HIT] regs: rcx=%p rdx=%p r8=%p rbx=%p rsp=%p\n",
+            (void*)ep->ContextRecord->Rcx, (void*)ep->ContextRecord->Rdx,
+            (void*)ep->ContextRecord->R8, (void*)ep->ContextRecord->Rbx,
+            (void*)ep->ContextRecord->Rsp);
     fflush(stderr);
 
     /* Clear DR0/DR7 so we don't loop on the same write — one-shot trap. */
