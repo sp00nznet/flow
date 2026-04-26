@@ -84,6 +84,19 @@ static void flow_guest_caller(uint32_t opd_addr,
                               uint64_t a2, uint64_t a3)
 {
     if (!opd_addr) return;
+    /* Diagnostic: dump the UI handler pointer slot used by flOw's
+     * sysutil callback. The callback at func_000CB930 reads
+     * *(*(TOC-0x5504)) = *(*0x008914A4) = *0x10164D20 to get the UI
+     * handler object, then calls its vtable[0]. If the object is NULL
+     * the vtable call is skipped — that's the most common reason event
+     * delivery has no observable effect. */
+    {
+        uint32_t ptr_slot   = vm_read32(0x008914A4);   /* should be 0x10164D20 */
+        uint32_t ui_handler = ptr_slot ? vm_read32(ptr_slot) : 0;
+        uint32_t vt         = ui_handler ? vm_read32(ui_handler) : 0;
+        fprintf(stderr, "[GUEST-CB-PRE] ptr_slot=0x%08X ui_handler=0x%08X vtable=0x%08X\n",
+                ptr_slot, ui_handler, vt);
+    }
     /* OPD layout: [0]=func entry, [4]=TOC, [8]=env */
     uint32_t func = vm_read32(opd_addr);
     uint32_t toc  = vm_read32(opd_addr + 4);
@@ -215,10 +228,19 @@ static LONG WINAPI flow_watch_veh(EXCEPTION_POINTERS* ep)
             (void*)ep->ContextRecord->Rsp);
     fflush(stderr);
 
-    /* Clear DR0/DR7 so we don't loop on the same write — one-shot trap. */
-    ep->ContextRecord->Dr0 = 0;
-    ep->ContextRecord->Dr7 &= ~0xFFFFull;
-    /* Clear the DR6 status bit so single-step doesn't refire. */
+    /* Re-arm: clear DR6's hit-status so we don't refire on the same
+     * single-step, but leave DR0/DR7 enabled so we catch every subsequent
+     * write to the watched address. Cap the total number of hits we
+     * report so a busy region (e.g. the ELF loader spamming BSS init)
+     * doesn't drown the log. */
+    static int s_hit_count = 0;
+    s_hit_count++;
+    if (s_hit_count >= 20) {
+        ep->ContextRecord->Dr0 = 0;
+        ep->ContextRecord->Dr7 &= ~0xFFFFull;
+        fprintf(stderr, "[WATCH] disarmed after 20 hits\n");
+        fflush(stderr);
+    }
     ep->ContextRecord->Dr6 &= ~0xFull;
     return EXCEPTION_CONTINUE_EXECUTION;
 }
@@ -461,13 +483,11 @@ int main(int argc, char* argv[])
     /* 3a. Install a hardware write-watchpoint on mod_cellSysutil.name so
      * we can catch the writer that zeroes it mid-run. The address comes
      * from the layout dump at the start of flow_register_hle_modules. */
-    if (g_ps3_module_registry.count > 0) {
-        ps3_module* m = g_ps3_module_registry.modules[0];
-        flow_install_watch_veh();
-        /* Watch the .name field (first 8 bytes); becoming NULL is the
-         * primary symptom of the corruption. */
-        flow_install_watchpoint(&m->name, 8);
-    }
+    /* Watchpoint disabled — the rsx_state overflow is fixed. Re-target
+     * to the guest UI-handler slot so we catch whatever code is supposed
+     * to populate it (or learn that nothing ever does). */
+    flow_install_watch_veh();
+    flow_install_watchpoint(vm_base + 0x10164D20, 4);
 
     /* 3b. Set thread entry trampoline for real multi-threading. */
     {
