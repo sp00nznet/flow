@@ -20,6 +20,7 @@
 #include <ps3emu/module.h>
 #include <ps3emu/nid.h>
 #include <ps3emu/error_codes.h>
+#include "libs/system/cellSaveData.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -2056,9 +2057,41 @@ static void register_cellSysutil(void)
     reg_func(&mod_cellSysutil, "cellMsgDialogOpen",                (void*)hle_stub);
     reg_func(&mod_cellSysutil, "cellMsgDialogOpen2",               (void*)hle_stub);
     reg_func(&mod_cellSysutil, "cellMsgDialogAbort",               (void*)hle_stub);
-    reg_func(&mod_cellSysutil, "cellSaveDataAutoSave",             (void*)hle_stub);
-    reg_func(&mod_cellSysutil, "cellSaveDataAutoLoad",             (void*)hle_stub);
-    reg_func(&mod_cellSysutil, "cellSaveDataDelete",               (void*)hle_stub);
+    /* SaveData bridges call into the runtime which short-circuits to a
+     * predictable error code (CBRESULT/NODATA) without trying to host-call
+     * the guest funcStat pointer. Matches the path RPCS3 takes on
+     * first-run with no save data — flOw advances past the load on
+     * either result. */
+    reg_func(&mod_cellSysutil, "cellSaveDataAutoSave",
+             (void*)+[](ppu_context* ctx) -> int64_t {
+                 return cellSaveDataAutoSave(
+                     (uint32_t)ctx->gpr[3], guest_str(ctx->gpr[4]),
+                     (uint32_t)ctx->gpr[5],
+                     (CellSaveDataSetBuf*)guest_ptr(ctx->gpr[6]),
+                     (CellSaveDataStatCallback)(uintptr_t)ctx->gpr[7],
+                     (CellSaveDataFileCallback)(uintptr_t)ctx->gpr[8],
+                     (uint32_t)ctx->gpr[9],
+                     (void*)(uintptr_t)ctx->gpr[10]);
+             });
+    reg_func(&mod_cellSysutil, "cellSaveDataAutoLoad",
+             (void*)+[](ppu_context* ctx) -> int64_t {
+                 int32_t rc = cellSaveDataAutoLoad(
+                     (uint32_t)ctx->gpr[3], guest_str(ctx->gpr[4]),
+                     (uint32_t)ctx->gpr[5],
+                     (CellSaveDataSetBuf*)guest_ptr(ctx->gpr[6]),
+                     (CellSaveDataStatCallback)(uintptr_t)ctx->gpr[7],
+                     (CellSaveDataFileCallback)(uintptr_t)ctx->gpr[8],
+                     (uint32_t)ctx->gpr[9],
+                     (void*)(uintptr_t)ctx->gpr[10]);
+                 ctx->gpr[3] = (uint64_t)(int64_t)rc;
+                 return rc;
+             });
+    reg_func(&mod_cellSysutil, "cellSaveDataDelete",
+             (void*)+[](ppu_context* ctx) -> int64_t {
+                 return cellSaveDataDelete(
+                     (uint32_t)ctx->gpr[3], guest_str(ctx->gpr[4]),
+                     (uint32_t)ctx->gpr[5]);
+             });
     reg_func(&mod_cellSysutil, "cellHddGameCheck",                 (void*)bridge_cellHddGameCheck);
 
     mod_cellSysutil.loaded = true;
