@@ -69,7 +69,54 @@ extern "C" const RecompiledFunc g_recompiled_funcs[];
 extern "C" const size_t         g_recompiled_func_count;
 
 #include <ps3emu/module.h>
+#include <ps3emu/guest_call.h>
 extern "C" const char* failbit_resolve_rip(void* rip, uint32_t* out_guest);
+extern "C" void ps3_indirect_call(ppu_context* ctx);
+extern "C" uint32_t vm_read32(uint64_t addr);
+
+/* Host-side dispatcher used by the ps3recomp runtime to invoke guest
+ * callbacks (cellSysutil events, save-data completion, etc.). The runtime
+ * hands us a guest OPD address and up to 4 args; we read the OPD's
+ * function entry + TOC, build a minimal ppu_context on the stack, and
+ * trampoline through it before returning. */
+static void flow_guest_caller(uint32_t opd_addr,
+                              uint64_t a0, uint64_t a1,
+                              uint64_t a2, uint64_t a3)
+{
+    if (!opd_addr) return;
+    /* OPD layout: [0]=func entry, [4]=TOC, [8]=env */
+    uint32_t func = vm_read32(opd_addr);
+    uint32_t toc  = vm_read32(opd_addr + 4);
+    if (!func) return;
+
+    /* Allocate a fresh ppu_context on the host stack and a small guest
+     * scratch stack. We use a reserved high region (0xCFF00000+) so we
+     * don't collide with the main thread's stack. */
+    static uint32_t s_cb_sp = 0xCFFE0000;
+    ppu_context cb_ctx;
+    ppu_context_init(&cb_ctx);
+    ppu_set_stack(&cb_ctx, s_cb_sp, 0x10000);
+    cb_ctx.cia    = func;
+    cb_ctx.gpr[2] = toc ? toc : 0x008969A8;
+    cb_ctx.gpr[3] = a0;
+    cb_ctx.gpr[4] = a1;
+    cb_ctx.gpr[5] = a2;
+    cb_ctx.gpr[6] = a3;
+    cb_ctx.gpr[13] = 0x0F007000; /* TLS */
+    cb_ctx.lr     = 0x008175FC;  /* sys_process_exit stub */
+    cb_ctx.ctr    = func;
+
+    fprintf(stderr, "[GUEST-CB] dispatching opd=0x%08X func=0x%08X status=0x%llX\n",
+            opd_addr, func, (unsigned long long)a0);
+    fflush(stderr);
+
+    /* Bounce the next callback's stack so reentrant Check calls don't
+     * trample each other. 4 KB granularity is plenty. */
+    s_cb_sp -= 0x1000;
+    if (s_cb_sp < 0xCFF80000) s_cb_sp = 0xCFFE0000;
+
+    ps3_indirect_call(&cb_ctx);
+}
 
 /* Watchpoint plumbing: g_watch_addr is set by the runtime when we install
  * a write-watchpoint via debug registers; the VEH then checks every
@@ -402,6 +449,14 @@ int main(int argc, char* argv[])
 
     /* 3. Register HLE modules (NID-based import resolution). */
     flow_register_hle_modules();
+
+    /* 3a. Install the guest-callback dispatcher so the runtime can
+     * deliver sysutil events, save-data callbacks, etc. into recompiled
+     * code. This is the cross-repo seam: the runtime owns the event
+     * queue, the game owns the guest-call mechanism. */
+    g_ps3_guest_caller = flow_guest_caller;
+    fprintf(stderr, "[init] Installed guest-callback dispatcher\n");
+    fflush(stderr);
 
     /* 3a. Install a hardware write-watchpoint on mod_cellSysutil.name so
      * we can catch the writer that zeroes it mid-run. The address comes
