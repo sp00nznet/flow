@@ -327,6 +327,13 @@ extern "C" {
     /* Second longjmp slot: game-main assertion → game-loop injection. */
     jmp_buf g_loop_jmp;
     int g_loop_jmp_set = 0;
+    /* vt2 watchdog: SEH wrapper around vt2 dispatch in ppu_recomp.cpp
+     * uses setjmp(g_vt2_jmp) before invoking PhyreEngine PreUpdate, and
+     * lwmutex_lock spin detection longjmps here on hang. */
+    jmp_buf g_vt2_jmp;
+    int g_vt2_in_progress = 0;
+    uint32_t g_vt2_spin_mutex = 0;
+    uint32_t g_vt2_spin_lr = 0;
 }
 extern "C" void func_000CB9CC(ppu_context* ctx);  /* game main */
 extern "C" void func_000CBF4C(ppu_context* ctx);  /* engine run/destroy wrapper → game loop injection */

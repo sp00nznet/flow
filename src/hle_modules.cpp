@@ -163,6 +163,12 @@ extern "C" const char* failbit_resolve_rip(void* rip, uint32_t* out_guest);
  * directly. Set by main.cpp via setjmp before calling func_000CB9CC. */
 extern "C" jmp_buf g_loop_jmp;
 extern "C" int g_loop_jmp_set;
+/* vt2 watchdog: when set, lwmutex_lock spin detection longjmps here to
+ * abort a hung PhyreEngine PreUpdate so we can diagnose the spin. */
+extern "C" jmp_buf g_vt2_jmp;
+extern "C" int g_vt2_in_progress;
+extern "C" uint32_t g_vt2_spin_mutex;
+extern "C" uint32_t g_vt2_spin_lr;
 
 static int64_t bridge_sys_process_exit(ppu_context* ctx)
 {
@@ -416,6 +422,19 @@ static int64_t bridge_sys_lwmutex_lock(ppu_context* ctx)
                 mutex_hle.recursive_count,
                 (uint32_t)ctx->gpr[1], (uint32_t)ctx->lr, s_repeat);
         fflush(stderr);
+    }
+
+    /* vt2 watchdog: if PhyreEngine PreUpdate is spinning on the same
+     * mutex repeatedly, longjmp out so we can disable vt2 dispatch and
+     * record what mutex+LR caused the spin. Threshold 200 same-mutex
+     * locks is safe — real lock-cycle code wouldn't repeat that fast. */
+    if (g_vt2_in_progress && s_repeat > 200) {
+        g_vt2_spin_mutex = mutex_addr;
+        g_vt2_spin_lr    = (uint32_t)ctx->lr;
+        fprintf(stderr, "[VT2-WATCHDOG] lwmutex_lock spin: mutex=0x%08X repeat=%d LR=0x%08X — bailing\n",
+                mutex_addr, s_repeat, (uint32_t)ctx->lr);
+        fflush(stderr);
+        longjmp(g_vt2_jmp, 1);
     }
 
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
@@ -2181,17 +2200,95 @@ static int64_t hle_cellSpursAddWorkload(ppu_context* ctx) {
 static void register_cellSpurs(void)
 {
     ps3_module_init(&mod_cellSpurs, "cellSpurs");
+    /* Stub-out the long tail of cellSpurs APIs. Any game that touches
+     * SPURS will hit these — without registration each call would NID-miss.
+     * The cellSpurs.c file in libs/spurs has real (state-tracking) impls
+     * for many of these; bridging them is a follow-up. For now, returning
+     * CELL_OK is enough for most games because they don't actually depend
+     * on SPU side effects under our stub-only execution model. */
     const char* funcs[] = {
-        "cellSpursDetachLv2EventQueue", "cellSpursRemoveWorkload",
+        /* Core */
+        "cellSpursFinalize",
+        "cellSpursAttachLv2EventQueue", "cellSpursDetachLv2EventQueue",
+        "cellSpursGetNumSpuThread", "cellSpursGetSpuThreadGroupId",
+        "cellSpursGetSpuThreadId",
+        "cellSpursSetMaxContention", "cellSpursSetPriorities",
+        "cellSpursSetExceptionEventHandler",
+        /* Attribute setup (all return CELL_OK with no state) */
+        "cellSpursAttributeInitialize",
+        "cellSpursAttributeSetNamePrefix",
+        "cellSpursAttributeSetSpuThreadGroupType",
+        "cellSpursAttributeEnableSpuPrintfIfAvailable",
+        "cellSpursAttributeSetMemoryContainerForSpuThread",
+        "cellSpursAttributeEnableSystemWorkload",
+        "_cellSpursAttributeInitialize",
+        /* Init variants */
+        "cellSpursInitializeWithAttribute",
+        "cellSpursInitializeWithAttribute2",
+        /* Taskset */
+        "cellSpursCreateTaskset", "cellSpursCreateTasksetWithAttribute",
+        "cellSpursCreateTaskset2",
+        "cellSpursDestroyTaskset", "cellSpursDestroyTaskset2",
+        "cellSpursShutdownTaskset", "cellSpursJoinTaskset",
+        "cellSpursJoinTaskset2",
+        "cellSpursTasksetAttributeInitialize",
+        "cellSpursTasksetAttributeSetName",
+        "cellSpursTasksetAttributeSetTasksetSize",
+        "cellSpursTasksetAttributeSetMemoryContainer",
+        "cellSpursTasksetAttribute2Initialize",
+        "_cellSpursTasksetAttributeInitialize",
+        /* Tasks */
+        "cellSpursCreateTask", "cellSpursCreateTaskWithAttribute",
+        "cellSpursCreateTask2", "cellSpursCreateTask2WithBinInfo",
+        "cellSpursJoinTask", "cellSpursJoinTask2",
+        "cellSpursTryJoinTask", "cellSpursTryJoinTask2",
+        "cellSpursSendSignal",
+        "cellSpursTaskAttributeInitialize",
+        "cellSpursTaskAttribute2Initialize",
+        "cellSpursTaskAttributeSetExitCode",
+        "cellSpursTaskGetContextSaveAreaSize",
+        "cellSpursTaskExitCodeGet", "cellSpursTaskExitCodeRelease",
+        /* Workload */
+        "cellSpursAddWorkloadWithAttribute",
+        "cellSpursWorkloadAttributeInitialize",
+        "cellSpursWorkloadAttributeSetName",
+        "cellSpursWorkloadAttributeSetShutdownCompletionEventHook",
+        "cellSpursRemoveWorkload",
         "cellSpursWaitForWorkloadShutdown",
-        "cellSpursWakeUp", "cellSpursShutdownWorkload",
-        "cellSpursAttachLv2EventQueue",
-        "cellSpursFinalize", "cellSpursReadyCountStore",
-        "cellSpursRequestIdleSpu", "cellSpursGetInfo",
-        "cellSpursSetPriorities", "cellSpursSetExceptionEventHandler",
+        "cellSpursShutdownWorkload",
+        "cellSpursReadyCountStore", "cellSpursReadyCountAdd",
+        "cellSpursReadyCountSwap", "cellSpursReadyCountCompareAndSwap",
+        "cellSpursWakeUp", "cellSpursSendWorkloadSignal",
+        "cellSpursGetWorkloadFlag", "cellSpursGetInfo",
+        "cellSpursRequestIdleSpu",
+        /* Event flag */
+        "cellSpursEventFlagInitializeIWL",
+        "cellSpursEventFlagAttachLv2EventQueue",
+        "cellSpursEventFlagDetachLv2EventQueue",
+        "cellSpursEventFlagWait", "cellSpursEventFlagClear",
+        "cellSpursEventFlagSet", "cellSpursEventFlagTryWait",
+        "cellSpursEventFlagGetTasksetAddress",
+        "_cellSpursEventFlagInitialize",
+        /* Job chain */
+        "cellSpursJobChainAttributeInitialize",
+        "cellSpursCreateJobChain", "cellSpursCreateJobChainWithAttribute",
+        "cellSpursJoinJobChain", "cellSpursKickJobChain",
+        "cellSpursShutdownJobChain", "cellSpursRunJobChain",
+        "cellSpursGetJobPipelineInfo", "cellSpursGetJobChainInfo",
+        /* Lock-free queue */
+        "_cellSpursQueueInitialize",
+        "cellSpursQueuePush", "cellSpursQueuePushBody",
+        "cellSpursQueuePop", "cellSpursQueuePopBody",
+        "cellSpursQueueTryPushBody", "cellSpursQueueTryPopBody",
+        /* LFQueue */
+        "_cellSpursLFQueueInitialize",
+        "cellSpursLFQueuePush", "cellSpursLFQueuePop",
+        "cellSpursLFQueueAttachLv2EventQueue",
+        "cellSpursLFQueueDetachLv2EventQueue",
     };
     for (auto name : funcs)
         reg_func(&mod_cellSpurs, name, (void*)hle_stub);
+    /* Real(ish) bridges that initialize structure state */
     reg_func(&mod_cellSpurs, "cellSpursInitialize", (void*)hle_cellSpursInitialize);
     reg_func(&mod_cellSpurs, "cellSpursAddWorkload", (void*)hle_cellSpursAddWorkload);
     mod_cellSpurs.loaded = true;
