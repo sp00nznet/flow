@@ -45,14 +45,19 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | GCM / RSX init | **Complete** | Guest command buffer, display buffers, tile/zcull, MapMainMemory |
 | Engine init | **Complete** | PhyreEngine created, 12 subsystems, vtables resolved |
 | Input init | **Complete** | cellPadInit, cellKbInit (×4), cellMouseInit |
-| Engine game loop | **Running** | Continuous frame loop, 12 subsystems ticking each frame |
-| GCM rendering | **Working** | D3D12 GPU: Level 3 scene — ocean gradient, snake, particles, food (486 verts) |
+| Engine game loop | **Running** | Continuous frame loop, ~88 FPS, 12 subsystems ticking each frame |
+| Natural cellGcmInit | **Working** | Game's own `_cellGcmInitBody` fires; cmdbuf 0x00C005E0–0x00CF05E0 |
+| Natural VBlank handler | **Working** | Game's `func_000CBE24` dispatched per frame via `g_ps3_guest_caller` |
+| GCM rendering | **Working** | D3D12 GPU: game's own surface clear (placeholder scene-builder gated off once natural ctx is live) |
 | Buffer flips | **Working** | cellGcmSetFlipCommand alternating buffers 0/1, batched DRAW_ARRAYS |
 | Graphics backend | **D3D12** | Device FL11.0, vertex-colored PSO, 112KB VB, DrawInstanced, VSync |
 | Audio backend | **Wired** | cellAudio → WASAPI via ps3recomp |
 | Input backend | **Wired** | cellPad → XInput via ps3recomp |
+| SPURS pre-seed | **Working** | `cellSpursInitialize` called at engine_run entry on synthesized 2 KB struct |
+| SPU PPU fallback | **Available** | ps3recomp infrastructure complete; flOw doesn't yet trigger SPU thread create |
 | FIFO sync | **Partial** | All-register flag clearing solves 2/3 spin levels in PhyreEngine init |
-| Full gameplay | In Progress | Render context init blocked by data loop (no HLE escape point) |
+| Title-state machine | **Stuck** | Engine alive, no `cellPadGetData` / `cellHddGameCheck` / `cellFsOpen` / `sys_ppu_thread_create` — natural worker thread for the per-frame loop never spawns |
+| Full gameplay | In Progress | Title state needs upstream init we haven't located (gated by `r30` = game-state struct we can't synthesize) |
 
 ### What Works Now
 
@@ -87,9 +92,12 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 
 ### Known Issues
 
-- **Render method callbacks** — Engine vtable[2] (func_00810BB8) render method runs but dispatches to zeroed OPD at 0x01800000 (missing PhyreEngine callback). Handled gracefully by dispatch MISS handler.
-- **Empty scene graph** — Render context exists but render_ctx+0x3C4 (scene data) has an empty cluster. Full subsystem ticks would populate this but require switch table target recompilation.
-- **Switch table targets missing** — func_000CA3B4's switch dispatch (types 10-24) targets not in function table. Worked around with inline `subsystem_tick_case()`. Lifter needs switch table target extraction.
+- **Title-state wall** — engine alive but state machine doesn't progress. Disasm-verified: natural `func_000C858C` is one-shot shutdown, not a loop. The natural per-frame outer loop must come from a worker thread spawned by init code we don't reach. `sys_ppu_thread_create` is never called naturally; `cellHddGameCheck` / `cellFsOpen` / `cellPadGetData` zero calls. Our `for(;;)` substitutes for the missing worker — works for ticking but doesn't trigger the state machine.
+- **`func_00810BB8` is `__cxa_pure_virtual`** — engine vtable[2] is the abstract-method abort stub. Confirmed via disasm. Calling it always aborts. Kept disabled.
+- **`func_00138B7C` → `cellHddGameCheck` path** — gated by `sys_memory_container_create` (syscall 0x155); failure jumps to `func_001392F0` which calls cellHddGameCheck with a callback OPD at `r30 + -0x7DDC`. Reaching it from our injection point needs `r30` = a game-state struct we haven't synthesized.
+- **Render method callbacks** — Engine vtable[2] disabled; our scene-builder gated off once natural GCM ctx is live.
+- **Empty scene graph** — Render context exists but render_ctx+0x3C4 (scene data) has an empty cluster.
+- **Switch table targets** — func_000CA3B4's switch dispatch (types 10-24) targets not in function table. Worked around with inline `subsystem_tick_case()`. Lifter needs switch table target extraction.
 - **ELF data zeroing** — Workaround: snapshot restore at 6+ points + gCellGcmCurrentContext chain restore + BSS 0x10112000-0x10170000 zeroing.
 - **Control register endianness** — RSX MMIO accessed via lwbrx/stwbrx → host-endian uint32_t* access.
 - **vm_read32_fast bypass** — Snapshot restores via direct memcpy to vm_base.
@@ -291,6 +299,31 @@ flow/
 This project does not contain any proprietary Sony code, game binaries, encryption keys, or copyrighted game assets. It is a clean-room reimplementation of PS3 system libraries paired with automated binary translation tools. Users must supply their own legally obtained copy of flOw.
 
 ## Changelog
+
+### v0.5.0 — Natural Init + SPU Foundation (2026-04-29)
+- **Natural `_cellGcmInitBody` fires** — game's own GCM init runs to completion: cmdbuf at 0x00C005E0–0x00CF05E0 (960 KB), VBlank handler installed, FlipMode set, double-buffered, IO mapping done.
+- **Game-registered VBlank handler runs per frame** via cross-repo `g_ps3_guest_caller` — `cellGcmTickVBlank()` from our hand-edit dispatches the game's `func_000CBE24` every frame. Handler increments TOC-0x54D0 and sets the game-state flag at TOC-0x54CC every Nth tick.
+- **Engine vtable[3] dispatch** (`func_000CAA08`, the subsystem walker) ticks per frame without exception. 12 subsystems registered into `engine+4..0x30`. Per-subsystem vtable[3] also dispatched per frame.
+- **Scene-builder handover** — once the game's natural GCM context is detected at `0x101ED198`, our placeholder scene-builder is gated off (`s_natural_gcm_active`). The game's own surface clear (dark blue) is what's now visible.
+- **Direct flip stays on** — runtime processes whatever the game emitted into the natural cmdbuf each frame; D3D12 backend presents.
+- **~88 FPS sustained**, no aborts, no asserts, indefinite stability.
+- **Disasm-verified the natural lifecycle**: `func_000C858C` is genuinely one-shot shutdown (subsystem dtor walk + `cellPadEnd/KbEnd/MouseEnd` + tail-call destructor). The game's per-frame outer loop must come from a worker thread spawned by init code we haven't reached. Our hand-edit's `for(;;)` in `func_000C858C` substitutes for that missing worker.
+- **Pre-init SPURS seed** — calls `cellSpursInitialize` at engine_run entry on a synthesized 2 KB CellSpurs object so any subsystem that gates on the SPURS magic is satisfied.
+- **vtable[2] is `__cxa_pure_virtual`** — confirmed: `func_00810BB8` is the abstract-method abort stub. Calling it is always wrong; kept disabled with documented reasoning.
+
+#### ps3recomp SPU Stack (sister repo, 11 commits this cycle)
+The flOw push surfaced gaps in ps3recomp's SPU/SPURS support. Added a complete PPU-side execution path for any SPU-dependent game:
+- `nid_database.py`: 10 → 100+ SPURS NIDs (Attribute*, Taskset*, Task*, Workload*, EventFlag*, JobChain*, LFQueue*).
+- `ps3emu/spu_fallback.h` registry — `spu_register_ppu_fallback(entry_point, handler, user)`. Per-game shims register PPU-side equivalents of SPU jobs.
+- `sys_spu_image_open` parses SPU ELF — validates 0x7F"ELF" magic, extracts `e_entry` (BE u32 at offset 24), writes to `image+4`. Fallback registry can now match by real entry point.
+- SPU thread `args_ea` (gpr[8] in `sys_spu_thread_initialize`) plumbed through to fallback handlers; `sys_spu_thread_set_argument` updates it.
+- **Async fallback execution** — `sys_spu_thread_group_start` spawns one host thread per SPU thread that has a registered fallback (Win32 `CreateThread` / POSIX `pthread_create`). `sys_spu_thread_group_join` blocks on each thread's finish event and collects worst exit status.
+- `sys_spu_thread_get_exit_status` returns proper `CELL_ESRCH` / `CELL_ESTAT` / `CELL_OK` semantics (matches Sony docs).
+- **Virtual 256 KB local store per SPU thread** — `sys_spu_thread_write_ls` / `_read_ls` work end-to-end with 1/2/4/8-byte BE accesses + bounds checks. `spu_thread_get_local_store(tid)` exposes it to fallback handlers, closing the producer/consumer loop.
+- **Event-queue completion notification** — `sys_spu_thread_group_connect_event[_all_threads]` records the queue ID; `group_join` pushes a completion event `{group_id, exit_status, cause, 0}` so PPU code blocked in `sys_event_queue_receive` wakes up.
+- New `sys_event_queue_push_by_id()` public helper for non-syscall callers.
+- `docs/SPU_FALLBACK.md` with usage example + LS access pattern.
+- vt2 watchdog (jmp_buf + `g_vt2_in_progress` flag in `bridge_sys_lwmutex_lock`) for safe spin investigation.
 
 ### v0.4.0 — Game Reaches main() (2026-03-21)
 - 91,758 functions recompiled (up from 51,658) via branch target splitting
