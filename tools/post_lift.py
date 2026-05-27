@@ -406,6 +406,95 @@ def patch_wake_init(recomp_dir: str) -> int:
     return 1
 
 
+def patch_worker_wake(recomp_dir: str) -> int:
+    """Inject a one-shot func_000A7944 call into func_000C858C's pre-loop init.
+
+    func_000A7944 is the subsystem worker-pool spawner: lazy-init flag at
+    *(TOC-0x5CE4), then iterates a count and calls the thread-create
+    wrapper func_0007163C N times. Each spawned thread bootstraps via
+    func_00071F38 which bctrls through an OPD held in the desc block.
+
+    ps3recomp's sys_ppu_thread_create + g_ppu_thread_entry_trampoline is
+    already wired (main.cpp installs ps3_thread_entry), so each spawn
+    produces a real host thread running the guest entry.
+
+    The natural caller chain that invokes func_000A7944 is gated by init
+    we haven't woken yet. Calling it explicitly from the per-frame loop's
+    one-shot setup primes the manager — the first call takes the
+    "uninit" path (creates 4 lwmutex pairs, allocs the manager state),
+    sets the init flag, and returns. On its first invocation the work
+    queue is empty so no thread spawns yet, but the infrastructure is
+    now in place for whatever code path later pushes work items.
+
+    We anchor the insertion right after the SPURS-SEED block end and
+    before the "Minimal render context" block in func_000C858C.
+    """
+    cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
+    with open(cpp_path, "rb") as f:
+        data = f.read()
+
+    # Anchor: the comment that opens the render-context init block.
+    anchor = b"            /* Minimal render context (func_000E2BE0 stuck in data loop)."
+    idx = data.find(anchor)
+    if idx < 0:
+        print("  Render-context anchor not found — skipping worker-wake patch")
+        return 0
+
+    # Don't double-patch
+    if b"[WORKER-WAKE]" in data:
+        print("  Worker-wake injection already present")
+        return 0
+
+    injection = (
+        b"            /* Wake the subsystem worker-thread pool (one-shot, SEH-wrapped).\n"
+        b"             *\n"
+        b"             * func_000A7944 is a subsystem worker-pool spawner: lazy-init\n"
+        b"             * flag at *(TOC-0x5CE4), allocates a manager + 4 lwmutex\n"
+        b"             * objects, then enters a spawn loop that calls the thread-create\n"
+        b"             * wrapper func_0007163C for each pending work item. The natural\n"
+        b"             * caller chain is gated by init we haven't woken; invoking it\n"
+        b"             * here primes the manager so any later code path that pushes\n"
+        b"             * work items causes real PPU threads to spawn via the wired\n"
+        b"             * sys_ppu_thread_create + ps3_thread_entry trampoline.\n"
+        b"             *\n"
+        b"             * On entry the first call takes the uninit branch (alloc + 4\n"
+        b"             * lwmutex pairs + atexit reg + branch back to the function top),\n"
+        b"             * sets the init-flag byte, and returns without spawning since\n"
+        b"             * the work queue is empty. */\n"
+        b"            {\n"
+        b"                static int s_workers_woken = 0;\n"
+        b"                static int s_workers_disabled = 0;\n"
+        b"                if (!s_workers_woken && !s_workers_disabled) {\n"
+        b"                    s_workers_woken = 1;\n"
+        b"                    fprintf(stderr, \"[WORKER-WAKE] Calling func_000A7944 to spawn worker pool\\n\");\n"
+        b"                    fflush(stderr);\n"
+        b"                    __try {\n"
+        b"                        ppu_context wctx = *ctx;\n"
+        b"                        wctx.gpr[3] = (uint32_t)ctx->gpr[3]; /* engine instance */\n"
+        b"                        wctx.gpr[2] = 0x008969A8;            /* TOC base */\n"
+        b"                        func_000A7944(&wctx);\n"
+        b"                        DRAIN_TRAMPOLINE(&wctx);\n"
+        b"                        fprintf(stderr, \"[WORKER-WAKE] func_000A7944 returned cleanly\\n\");\n"
+        b"                        fflush(stderr);\n"
+        b"                    } __except (EXCEPTION_EXECUTE_HANDLER) {\n"
+        b"                        s_workers_disabled = 1;\n"
+        b"                        fprintf(stderr, \"[WORKER-WAKE] func_000A7944 threw \xe2\x80\x94 disabling further attempts\\n\");\n"
+        b"                        fflush(stderr);\n"
+        b"                    }\n"
+        b"                }\n"
+        b"            }\n"
+        b"\n"
+    )
+
+    data = data[:idx] + injection + data[idx:]
+
+    with open(cpp_path, "wb") as f:
+        f.write(data)
+
+    print("  Patched func_000C858C -> one-shot func_000A7944 worker-wake")
+    return 1
+
+
 def print_stats(recomp_dir: str) -> None:
     """Print statistics about the recompiled code."""
     cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
@@ -456,6 +545,9 @@ def main():
 
     print("\n7. Patching CRT assert wrapper (wake fopen)")
     patch_crt_assert(recomp_dir)
+
+    print("\n8. Patching worker-wake (one-shot func_000A7944 in func_000C858C)")
+    patch_worker_wake(recomp_dir)
 
     print_stats(recomp_dir)
     print("\nDone! Ready to build.")
