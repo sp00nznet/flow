@@ -495,6 +495,88 @@ def patch_worker_wake(recomp_dir: str) -> int:
     return 1
 
 
+def patch_state_probe(recomp_dir: str) -> int:
+    """Inject a one-shot state-machine probe into func_000C858C's pre-loop init.
+
+    The main-init state machine the lifter scattered across the 0x00267xxx-
+    0x0026Axxx region is a C++ class with vtable at 0x0085C8D0. Eight
+    instances live in seg3 BSS (0x100802A8, 0x10083C70, 0x10086440,
+    0x100864B8, 0x10086530, 0x100865A8, 0x10086620, 0x10086698) — all
+    constructed by the CRT static-init walker, all with valid substate
+    pointers at +0x38 / +0x50..+0x58.
+
+    Calling vt[0] (func_0026A7BC) on instance [0] is safe and returns
+    cleanly, but causes a per-frame slowdown (~5 FPS vs 18 FPS baseline)
+    because the state transition activates additional subsystem work in
+    the engine's vtable[3] tick. So we don't dispatch it here — just log
+    the BSS state once so we know the instances are alive and can later
+    drive them once we understand the cost.
+
+    The natural HddGameCheck call chain at func_001392F0 (gated by
+    sys_memory_container_create success at func_00138B7C) lives inside
+    this state machine's transitions.
+    """
+    cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
+    with open(cpp_path, "rb") as f:
+        data = f.read()
+
+    anchor = b"            /* Minimal render context (func_000E2BE0 stuck in data loop)."
+    idx = data.find(anchor)
+    if idx < 0:
+        print("  Render-context anchor not found — skipping state-probe patch")
+        return 0
+
+    if b"[STATE-PROBE]" in data:
+        print("  State-probe injection already present")
+        return 0
+
+    injection = (
+        b"            /* Probe the main-init state-machine instances (one-shot).\n"
+        b"             *\n"
+        b"             * Disasm shows a vtable cluster at 0x0085C8D0 referenced by 8\n"
+        b"             * static instances in seg3 BSS. Each instance is a state-machine\n"
+        b"             * object whose vtable methods drive the natural HddGameCheck\n"
+        b"             * call chain (the \"0x00267xxx region\" the lifter split across\n"
+        b"             * mutual trampolines).\n"
+        b"             *\n"
+        b"             * Logging only \xe2\x80\x94 dispatching vt[0] on inst[0] returns cleanly\n"
+        b"             * but causes a per-frame slowdown via the engine vt[3] tick.\n"
+        b"             * The probe confirms each slot's vtable pointer + the\n"
+        b"             * substate-field offsets the vtable methods deref. */\n"
+        b"            {\n"
+        b"                static int s_probed = 0;\n"
+        b"                if (!s_probed) {\n"
+        b"                    s_probed = 1;\n"
+        b"                    static const uint32_t kStateInstances[] = {\n"
+        b"                        0x100802A8, 0x10083C70, 0x10086440, 0x100864B8,\n"
+        b"                        0x10086530, 0x100865A8, 0x10086620, 0x10086698,\n"
+        b"                    };\n"
+        b"                    fprintf(stderr, \"[STATE-PROBE] Scanning main-init state-machine instances:\\n\");\n"
+        b"                    for (unsigned i = 0; i < sizeof(kStateInstances)/sizeof(kStateInstances[0]); i++) {\n"
+        b"                        uint32_t inst = kStateInstances[i];\n"
+        b"                        uint32_t vt = vm_read32(inst);\n"
+        b"                        uint32_t off38 = vm_read32(inst + 0x38);\n"
+        b"                        fprintf(stderr, \"  [%u] 0x%08X: vtable=0x%08X substate=0x%08X%s\\n\",\n"
+        b"                                i, inst, vt, off38,\n"
+        b"                                (vt == 0x0085C8D0) ? \"\" : \" (UNEXPECTED)\");\n"
+        b"                    }\n"
+        b"                    uint32_t globals = vm_read32(0x008969A8 - 0x4B9C);\n"
+        b"                    fprintf(stderr, \"[STATE-PROBE] *(TOC-0x4B9C)=0x%08X (state-machine globals)\\n\", globals);\n"
+        b"                    fflush(stderr);\n"
+        b"                }\n"
+        b"            }\n"
+        b"\n"
+    )
+
+    data = data[:idx] + injection + data[idx:]
+
+    with open(cpp_path, "wb") as f:
+        f.write(data)
+
+    print("  Patched func_000C858C -> one-shot state-machine probe")
+    return 1
+
+
 def print_stats(recomp_dir: str) -> None:
     """Print statistics about the recompiled code."""
     cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
@@ -548,6 +630,9 @@ def main():
 
     print("\n8. Patching worker-wake (one-shot func_000A7944 in func_000C858C)")
     patch_worker_wake(recomp_dir)
+
+    print("\n9. Patching state-machine probe (diagnostic dump of 8 BSS instances)")
+    patch_state_probe(recomp_dir)
 
     print_stats(recomp_dir)
     print("\nDone! Ready to build.")
