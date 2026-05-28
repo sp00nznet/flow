@@ -496,25 +496,35 @@ def patch_worker_wake(recomp_dir: str) -> int:
 
 
 def patch_state_probe(recomp_dir: str) -> int:
-    """Inject a one-shot state-machine probe into func_000C858C's pre-loop init.
+    """Inject a one-shot probe + (disabled) vtable-method sweep into func_000C858C.
 
-    The main-init state machine the lifter scattered across the 0x00267xxx-
-    0x0026Axxx region is a C++ class with vtable at 0x0085C8D0. Eight
-    instances live in seg3 BSS (0x100802A8, 0x10083C70, 0x10086440,
-    0x100864B8, 0x10086530, 0x100865A8, 0x10086620, 0x10086698) — all
-    constructed by the CRT static-init walker, all with valid substate
-    pointers at +0x38 / +0x50..+0x58.
+    A C++ class with vtable at 0x0085C8D0 has 8 statically constructed
+    instances in seg3 BSS (0x100802A8, 0x10083C70, 0x10086440, 0x100864B8,
+    0x10086530, 0x100865A8, 0x10086620, 0x10086698) — all alive after CRT
+    static-init, all with valid substate pointers at +0x38 / +0x50..+0x58.
 
-    Calling vt[0] (func_0026A7BC) on instance [0] is safe and returns
-    cleanly, but causes a per-frame slowdown (~5 FPS vs 18 FPS baseline)
-    because the state transition activates additional subsystem work in
-    the engine's vtable[3] tick. So we don't dispatch it here — just log
-    the BSS state once so we know the instances are alive and can later
-    drive them once we understand the cost.
+    Vtable-method sweep findings (one-shot call on instance [0], r4=0):
+      vt[0] func_0026A7BC: returns cleanly; HEAVIEST — sets a state that
+                           makes the engine vt[3] tick do extra subsystem work.
+      vt[1] func_0026AAF4: update method; reads a float at r4+0x1C so it
+                           NEEDS a valid 2nd arg (frame/render context).
+                           With r4=0 it walks into a NULL OPD at 0xD00000
+                           and the spin-escape aborts.
+      vt[2] func_0026AE3C: LIGHTWEIGHT tick — transform/vector compute
+                           (copies position fields, fsubs deltas), returns
+                           cleanly with just `this`. The closest thing to a
+                           pure per-frame tick among the four.
+      vt[3] func_0026AF6C: bigger update; same r4-context requirement as vt[1].
 
-    The natural HddGameCheck call chain at func_001392F0 (gated by
-    sys_memory_container_create success at func_00138B7C) lives inside
-    this state machine's transitions.
+    IMPORTANT CORRECTION: this class is NOT the HddGameCheck title-state path.
+    The cellHddGameCheck call at func_001392F0 (gated by
+    sys_memory_container_create success at func_00138B7C) is separate code
+    in the 0x138xxx region. The vt[2] math (positions + deltas) suggests
+    these 8 instances are render/transform objects, not the init state machine.
+
+    The block logs each instance once. The actual vt dispatch is gated
+    behind VT_PROBE_IDX (default -1 = disabled, restores full FPS). Set it
+    to 0..3 at compile time to re-run the sweep.
     """
     cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
     with open(cpp_path, "rb") as f:
@@ -531,18 +541,10 @@ def patch_state_probe(recomp_dir: str) -> int:
         return 0
 
     injection = (
-        b"            /* Probe the main-init state-machine instances (one-shot).\n"
-        b"             *\n"
-        b"             * Disasm shows a vtable cluster at 0x0085C8D0 referenced by 8\n"
-        b"             * static instances in seg3 BSS. Each instance is a state-machine\n"
-        b"             * object whose vtable methods drive the natural HddGameCheck\n"
-        b"             * call chain (the \"0x00267xxx region\" the lifter split across\n"
-        b"             * mutual trampolines).\n"
-        b"             *\n"
-        b"             * Logging only \xe2\x80\x94 dispatching vt[0] on inst[0] returns cleanly\n"
-        b"             * but causes a per-frame slowdown via the engine vt[3] tick.\n"
-        b"             * The probe confirms each slot's vtable pointer + the\n"
-        b"             * substate-field offsets the vtable methods deref. */\n"
+        b"            /* One-shot probe of the 0x0085C8D0-vtable class instances\n"
+        b"             * plus an optional vtable-method sweep (VT_PROBE_IDX, default\n"
+        b"             * -1 = disabled). See tools/post_lift.patch_state_probe for the\n"
+        b"             * per-method findings. */\n"
         b"            {\n"
         b"                static int s_probed = 0;\n"
         b"                if (!s_probed) {\n"
@@ -551,7 +553,7 @@ def patch_state_probe(recomp_dir: str) -> int:
         b"                        0x100802A8, 0x10083C70, 0x10086440, 0x100864B8,\n"
         b"                        0x10086530, 0x100865A8, 0x10086620, 0x10086698,\n"
         b"                    };\n"
-        b"                    fprintf(stderr, \"[STATE-PROBE] Scanning main-init state-machine instances:\\n\");\n"
+        b"                    fprintf(stderr, \"[STATE-PROBE] Scanning 0x0085C8D0-vtable class instances:\\n\");\n"
         b"                    for (unsigned i = 0; i < sizeof(kStateInstances)/sizeof(kStateInstances[0]); i++) {\n"
         b"                        uint32_t inst = kStateInstances[i];\n"
         b"                        uint32_t vt = vm_read32(inst);\n"
@@ -561,8 +563,39 @@ def patch_state_probe(recomp_dir: str) -> int:
         b"                                (vt == 0x0085C8D0) ? \"\" : \" (UNEXPECTED)\");\n"
         b"                    }\n"
         b"                    uint32_t globals = vm_read32(0x008969A8 - 0x4B9C);\n"
-        b"                    fprintf(stderr, \"[STATE-PROBE] *(TOC-0x4B9C)=0x%08X (state-machine globals)\\n\", globals);\n"
+        b"                    fprintf(stderr, \"[STATE-PROBE] *(TOC-0x4B9C)=0x%08X (class globals)\\n\", globals);\n"
         b"                    fflush(stderr);\n"
+        b"\n"
+        b"                    /* Optional vtable-method sweep. vt[2] (func_0026AE3C) is\n"
+        b"                     * the lightweight tick; vt[1]/vt[3] need a valid render\n"
+        b"                     * context in r4. Default disabled to keep full FPS. */\n"
+        b"                    #ifndef VT_PROBE_IDX\n"
+        b"                    #define VT_PROBE_IDX (-1)\n"
+        b"                    #endif\n"
+        b"                    if (VT_PROBE_IDX >= 0) {\n"
+        b"                        extern void func_0026A7BC(ppu_context*);  /* vt[0] */\n"
+        b"                        extern void func_0026AAF4(ppu_context*);  /* vt[1] */\n"
+        b"                        extern void func_0026AE3C(ppu_context*);  /* vt[2] */\n"
+        b"                        extern void func_0026AF6C(ppu_context*);  /* vt[3] */\n"
+        b"                        typedef void (*ppu_fn)(ppu_context*);\n"
+        b"                        ppu_fn methods[] = { func_0026A7BC, func_0026AAF4,\n"
+        b"                                             func_0026AE3C, func_0026AF6C };\n"
+        b"                        fprintf(stderr, \"[VT-SWEEP] Calling vt[%d] on inst[0]\\n\", VT_PROBE_IDX);\n"
+        b"                        fflush(stderr);\n"
+        b"                        __try {\n"
+        b"                            ppu_context tctx = *ctx;\n"
+        b"                            tctx.gpr[3] = 0x100802A8;\n"
+        b"                            tctx.gpr[4] = 0;\n"
+        b"                            tctx.gpr[2] = 0x008969A8;\n"
+        b"                            methods[VT_PROBE_IDX & 3](&tctx);\n"
+        b"                            DRAIN_TRAMPOLINE(&tctx);\n"
+        b"                            fprintf(stderr, \"[VT-SWEEP] vt[%d] returned cleanly\\n\", VT_PROBE_IDX);\n"
+        b"                            fflush(stderr);\n"
+        b"                        } __except (EXCEPTION_EXECUTE_HANDLER) {\n"
+        b"                            fprintf(stderr, \"[VT-SWEEP] vt[%d] threw\\n\", VT_PROBE_IDX);\n"
+        b"                            fflush(stderr);\n"
+        b"                        }\n"
+        b"                    }\n"
         b"                }\n"
         b"            }\n"
         b"\n"
@@ -573,7 +606,7 @@ def patch_state_probe(recomp_dir: str) -> int:
     with open(cpp_path, "wb") as f:
         f.write(data)
 
-    print("  Patched func_000C858C -> one-shot state-machine probe")
+    print("  Patched func_000C858C -> state probe + disabled vtable sweep")
     return 1
 
 
