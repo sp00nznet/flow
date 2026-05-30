@@ -662,6 +662,60 @@ def patch_papp_probes(recomp_dir: str) -> int:
     return patched
 
 
+def patch_papp_scan(recomp_dir: str) -> int:
+    """One-shot BSS/data scan in func_000C858C for PApplication instances.
+
+    Looks for any 4-byte slot in seg3 (0x10000000..0x10112000) whose value
+    matches a candidate PApplication-class vtable address. Confirmed in
+    this session: zero hits, i.e., no PApplication instance has been
+    constructed anywhere we reach. The probe stays in place as a
+    regression check — the moment a future fix wakes the construction
+    path, the scan will report the new instance addresses.
+    """
+    cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
+    with open(cpp_path, "rb") as f:
+        data = f.read()
+
+    anchor = b"            /* Minimal render context (func_000E2BE0 stuck in data loop)."
+    idx = data.find(anchor)
+    if idx < 0:
+        print("  Render-context anchor not found - skipping PApplication scan")
+        return 0
+    if b"[PAPP-SCAN]" in data:
+        print("  PApplication scan injection already present")
+        return 0
+
+    injection = (
+        b"            {\n"
+        b"                static int s_papp_scanned = 0;\n"
+        b"                if (!s_papp_scanned) {\n"
+        b"                    s_papp_scanned = 1;\n"
+        b"                    uint32_t vt_candidates[] = {0x1006E5F8, 0x10070338, 0x10070368};\n"
+        b"                    int total = 0;\n"
+        b"                    fprintf(stderr, \"[PAPP-SCAN] Scanning seg3 for PApplication vtable refs:\\n\");\n"
+        b"                    for (uint32_t a = 0x10000000; a < 0x10112000 && total < 50; a += 4) {\n"
+        b"                        uint32_t v = vm_read32(a);\n"
+        b"                        for (unsigned i = 0; i < sizeof(vt_candidates)/sizeof(vt_candidates[0]); i++) {\n"
+        b"                            if (v == vt_candidates[i]) {\n"
+        b"                                fprintf(stderr, \"  inst @ 0x%08X -> vt 0x%08X\\n\", a, v);\n"
+        b"                                total++; break;\n"
+        b"                            }\n"
+        b"                        }\n"
+        b"                    }\n"
+        b"                    fprintf(stderr, \"[PAPP-SCAN] %d candidate instance(s) found\\n\", total);\n"
+        b"                    fflush(stderr);\n"
+        b"                }\n"
+        b"            }\n"
+        b"\n"
+    )
+
+    data = data[:idx] + injection + data[idx:]
+    with open(cpp_path, "wb") as f:
+        f.write(data)
+    print("  Patched func_000C858C -> PApplication BSS scan")
+    return 1
+
+
 def print_stats(recomp_dir: str) -> None:
     """Print statistics about the recompiled code."""
     cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
@@ -721,6 +775,9 @@ def main():
 
     print("\n10. Patching PApplication lifecycle probes (Init/onInit/Frame)")
     patch_papp_probes(recomp_dir)
+
+    print("\n11. Patching PApplication BSS scan (one-shot instance search)")
+    patch_papp_scan(recomp_dir)
 
     print_stats(recomp_dir)
     print("\nDone! Ready to build.")
