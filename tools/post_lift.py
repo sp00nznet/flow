@@ -610,6 +610,58 @@ def patch_state_probe(recomp_dir: str) -> int:
     return 1
 
 
+def patch_papp_probes(recomp_dir: str) -> int:
+    """Persistent entry-probes on the PhyreEngine PApplication lifecycle.
+
+    Ghidra-recovered names (ps3recomp 1a32c8a):
+      func_000CF0DC = PApplication::Init
+      func_000CF310 = PApplication::onInit
+      func_000CF890 = PApplication::Frame   <- per-frame app loop
+
+    These are NEVER reached in our recomp — the natural construction that
+    creates the PApplication instance and starts its main loop is gated by
+    init we skip. Confirmed empirically: probes never fired in a 12 s run.
+
+    Adds a rate-limited (first 3 entries each) fprintf at the top of each so
+    a future regen or wake attempt can confirm when/if PApplication actually
+    starts running, without flooding the log.
+    """
+    cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
+    with open(cpp_path, "rb") as f:
+        data = f.read()
+
+    if b"[PAPP] Frame entered" in data:
+        print("  PApplication probes already present")
+        return 0
+
+    targets = [
+        (b"void func_000CF0DC(ppu_context* ctx) {",   "Init"),
+        (b"void func_000CF310(ppu_context* ctx) {",   "onInit"),
+        (b"void func_000CF890(ppu_context* ctx) {",   "Frame"),
+    ]
+    patched = 0
+    for header, name in targets:
+        idx = data.find(header)
+        if idx < 0:
+            print(f"  PApplication::{name} signature not found")
+            continue
+        insert_at = idx + len(header)
+        probe = (
+            b"\n        { static int s=0; if (s++ < 3) { "
+            b"fprintf(stderr, \"[PAPP] " + name.encode() +
+            b" entered #%d this=0x%08X\\n\", s, (uint32_t)ctx->gpr[3]); "
+            b"fflush(stderr); } }"
+        )
+        data = data[:insert_at] + probe + data[insert_at:]
+        patched += 1
+
+    with open(cpp_path, "wb") as f:
+        f.write(data)
+
+    print(f"  Patched {patched} PApplication lifecycle probes")
+    return patched
+
+
 def print_stats(recomp_dir: str) -> None:
     """Print statistics about the recompiled code."""
     cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
@@ -666,6 +718,9 @@ def main():
 
     print("\n9. Patching state-machine probe (diagnostic dump of 8 BSS instances)")
     patch_state_probe(recomp_dir)
+
+    print("\n10. Patching PApplication lifecycle probes (Init/onInit/Frame)")
+    patch_papp_probes(recomp_dir)
 
     print_stats(recomp_dir)
     print("\nDone! Ready to build.")
