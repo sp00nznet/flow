@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>   /* malloc/free on non-MSVC (was only pulled in via <stdlib.h> in the _MSC_VER branch) */
 #ifdef _WIN32
 #include <windows.h>
 #endif

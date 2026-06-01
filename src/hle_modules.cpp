@@ -20,10 +20,15 @@
 #include <ps3emu/module.h>
 #include <ps3emu/nid.h>
 #include <ps3emu/error_codes.h>
+#include <ps3emu/endian.h>   /* ps3_bswap* (portable byte swap) */
 #include "libs/system/cellSaveData.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#ifndef _WIN32
+#include <execinfo.h>   /* backtrace() — POSIX host stack capture */
+#include <pthread.h>    /* watchdog thread on POSIX */
+#endif
 
 /* Runtime headers */
 #include "runtime/ppu/ppu_context.h"
@@ -58,7 +63,12 @@ extern "C" {
 extern "C" uint8_t* vm_base;
 
 extern "C" void dispatch_register_external(uint32_t addr, void (*func)(void*));
+/* TLS storage class differs between Windows (__declspec(thread)) and POSIX. */
+#ifdef _WIN32
 extern "C" __declspec(thread) void (*g_trampoline_fn)(void*);
+#else
+extern "C" __thread void (*g_trampoline_fn)(void*);
+#endif
 extern "C" void ps3_indirect_call(ppu_context* ctx);
 extern "C" int rsx_null_backend_pump_messages(void);
 
@@ -193,10 +203,18 @@ static int64_t bridge_sys_process_exit(ppu_context* ctx)
         if (s_bt < 4) {
             s_bt++;
             void* frames[24];
+#ifdef _WIN32
             USHORT n = RtlCaptureStackBackTrace(0, 24, frames, NULL);
             uintptr_t base = (uintptr_t)GetModuleHandleA(NULL);
+#else
+            /* POSIX: capture the host backtrace via <execinfo.h>; resolve
+             * frames against the recompiled function table just like Windows.
+             * We have no module base to subtract, so report absolute RIPs. */
+            unsigned n = (unsigned)backtrace(frames, 24);
+            uintptr_t base = 0;
+#endif
             fprintf(stderr, "[ABORT-BT] HOST stack (%u frames):\n", n);
-            for (USHORT i = 0; i < n && i < 18; i++) {
+            for (unsigned i = 0; i < n && i < 18; i++) {
                 uintptr_t rip = (uintptr_t)frames[i];
                 uint32_t guest = 0;
                 const char* nm = failbit_resolve_rip(frames[i], &guest);
@@ -961,13 +979,23 @@ static void gcm_flush_guest_cmdbuf_noreset(void);
  * processes the command buffer and updates ctrl->get and ctrl->ref.
  * This breaks cellGcmFinish spin loops without needing HLE bridge calls. */
 static volatile int s_fifo_watchdog_active = 0;
-static DWORD WINAPI fifo_watchdog_thread(LPVOID param)
+
+/* Portable millisecond sleep used by the watchdog body below. */
+#ifndef _WIN32
+#include <unistd.h>  /* usleep */
+static inline void flow_sleep_ms(unsigned ms) { usleep(ms * 1000u); }
+#else
+static inline void flow_sleep_ms(unsigned ms) { Sleep(ms); }
+#endif
+
+/* Shared watchdog body — fully portable. The platform-specific thread entry
+ * points below just invoke this. */
+static void fifo_watchdog_body(void)
 {
-    (void)param;
     uint32_t last_put = 0;
     while (s_fifo_watchdog_active) {
         if (!g_gcm_control_guest || !g_gcm_cmdbuf_begin) {
-            Sleep(10);
+            flow_sleep_ms(10);
             continue;
         }
         /* Read put from guest memory (big-endian via vm_read32) */
@@ -989,21 +1017,21 @@ static DWORD WINAPI fifo_watchdog_thread(LPVOID param)
                     fprintf(stderr, "[FIFO-WD] put=0x%X scan %u bytes from 0x%X, first 8 raw:",
                             put, scan_size, buf_start);
                     for (uint32_t d = 0; d < 8 && d < num_dwords; d++)
-                        fprintf(stderr, " %08X", _byteswap_ulong(cmdbuf[d]));
+                        fprintf(stderr, " %08X", ps3_bswap32(cmdbuf[d]));
                     fprintf(stderr, "\n"); fflush(stderr);
                     s_wd_log++;
                 }
                 /* Scan for SET_REFERENCE and WRITE_BACK_END_LABEL */
                 int found_ref = 0;
                 for (uint32_t i = 0; i < num_dwords; ) {
-                    uint32_t header = _byteswap_ulong(cmdbuf[i++]);
+                    uint32_t header = ps3_bswap32(cmdbuf[i++]);
                     uint32_t type = (header >> 29) & 0x7;
                     if (type == 0 || type == 2) {
                         uint32_t method = ((header >> 2) & 0x7FF) << 2;
                         uint32_t count = (header >> 18) & 0x7FF;
                         for (uint32_t j = 0; j < count && i < num_dwords; j++, i++) {
                             uint32_t m = (type == 0) ? (method + j * 4) : method;
-                            uint32_t data = _byteswap_ulong(cmdbuf[i]);
+                            uint32_t data = ps3_bswap32(cmdbuf[i]);
                             if (m == 0x0050) { /* NV406E_SET_REFERENCE */
                                 vm_write32(g_gcm_control_guest + 8, data);
                                 found_ref = 1;
@@ -1026,16 +1054,38 @@ static DWORD WINAPI fifo_watchdog_thread(LPVOID param)
             vm_write32(g_gcm_control_guest + 4, put);
             last_put = put;
         }
-        Sleep(0); /* yield — tight poll for low latency */
+        flow_sleep_ms(0); /* yield — tight poll for low latency */
     }
+}
+
+/* Platform thread entry points wrapping the shared body. */
+#ifdef _WIN32
+static DWORD WINAPI fifo_watchdog_thread(LPVOID param)
+{
+    (void)param;
+    fifo_watchdog_body();
     return 0;
 }
+#else
+static void* fifo_watchdog_thread_posix(void* param)
+{
+    (void)param;
+    fifo_watchdog_body();
+    return nullptr;
+}
+#endif
 
 static void start_fifo_watchdog(void)
 {
     if (!s_fifo_watchdog_active) {
         s_fifo_watchdog_active = 1;
+#ifdef _WIN32
         CreateThread(NULL, 0, fifo_watchdog_thread, NULL, 0, NULL);
+#else
+        pthread_t tid;
+        pthread_create(&tid, nullptr, fifo_watchdog_thread_posix, nullptr);
+        pthread_detach(tid);
+#endif
         fprintf(stderr, "[RSX] FIFO watchdog thread started\n");
         fflush(stderr);
     }
@@ -1621,18 +1671,18 @@ static void gcm_flush_guest_cmdbuf_impl(int reset_current)
         if (s_flush_count <= 3) {
             fprintf(stderr, "[GCM-SCAN] %u dwords, first 8:", num_dwords);
             for (uint32_t d = 0; d < 8 && d < num_dwords; d++)
-                fprintf(stderr, " %08X(%08X)", cmdbuf[d], _byteswap_ulong(cmdbuf[d]));
+                fprintf(stderr, " %08X(%08X)", cmdbuf[d], ps3_bswap32(cmdbuf[d]));
             fprintf(stderr, "\n"); fflush(stderr);
         }
         for (uint32_t i = 0; i < num_dwords; ) {
-            uint32_t header = _byteswap_ulong(cmdbuf[i++]);
+            uint32_t header = ps3_bswap32(cmdbuf[i++]);
             uint32_t type = (header >> 29) & 0x7;
             if (type == 0 || type == 2) {
                 uint32_t method = ((header >> 2) & 0x7FF) << 2;
                 uint32_t count = (header >> 18) & 0x7FF;
                 for (uint32_t j = 0; j < count && i < num_dwords; j++, i++) {
                     uint32_t m = (type == 0) ? (method + j * 4) : method;
-                    uint32_t data = _byteswap_ulong(cmdbuf[i]);
+                    uint32_t data = ps3_bswap32(cmdbuf[i]);
                     if (m == 0x0050) { /* NV406E_SET_REFERENCE */
                         vm_write32(g_gcm_control_guest + 8, data);
                         static int s_ref_log = 0;
@@ -1644,7 +1694,7 @@ static void gcm_flush_guest_cmdbuf_impl(int reset_current)
                     if (m == 0x1D6C && (j + 1) < count && (i + 1) < num_dwords) {
                         /* NV4097_SET_WRITE_BACK_END_LABEL: index=data, value=next */
                         uint32_t label_index = data;
-                        uint32_t label_value = _byteswap_ulong(cmdbuf[i + 1]);
+                        uint32_t label_value = ps3_bswap32(cmdbuf[i + 1]);
                         if (g_gcm_labels_guest && label_index < 256) {
                             vm_write32(g_gcm_labels_guest + label_index * 4, label_value);
                             static int s_lbl_log = 0;

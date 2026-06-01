@@ -52,8 +52,14 @@ static int s_dispatch_initialized = 0;
  * pointer and returns.  Every call site drains the trampoline chain.
  * -----------------------------------------------------------------------*/
 /* Thread-local trampoline state — each thread has its own chain */
+/* Windows uses __declspec(thread); POSIX/GCC uses __thread for C-linkage TLS. */
+#ifdef _WIN32
 extern "C" __declspec(thread) void (*g_trampoline_fn)(void*) = nullptr;
 extern "C" __declspec(thread) uint64_t g_trampoline_iters = 0;
+#else
+extern "C" __thread void (*g_trampoline_fn)(void*) = nullptr;
+extern "C" __thread uint64_t g_trampoline_iters = 0;
+#endif
 
 extern "C" int g_sp_trace_enabled = 0;
 extern "C" uint32_t g_sp_lowest = 0xFFFFFFFF;
