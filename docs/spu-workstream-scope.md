@@ -147,9 +147,14 @@ outbound mailbox; the host harness verifies BOTH halves. Passes via `run_tests.s
 This proves the core PPU↔SPU coordination handshake — SPU job produces shared-memory output
 AND signals completion — decoupled from flOw's boot.
 
-**Next concrete layers (build on this unit):**
-1. Wrap the mailbox signal in a **`sys_event_queue` + `sys_spu_thread_group_connect_event`**
-   path (flOw's actual completion mechanism) — minimal host harness, no game.
+**Integration ladder (build on this unit):**
+1. ~~Wrap the signal in a `sys_event_queue` + `sys_spu_thread_group_connect_event` path
+   (flOw's actual completion mechanism)~~ — **DONE (ps3recomp 5a070c5, run_tests.sh 6/6).**
+   SPU raises completion via the interrupt mailbox (`SPU_WrOutIntrMbox`); host models the
+   connected event queue exactly as `runtime/syscalls/sys_event.c` (`sys_event_t` ring +
+   `push_by_id`/`receive`); PPU receives the completion event. Next: wire the REAL
+   `sys_event.c` + lv2 `sys_spu_thread_group_*` layer (ppu_context bridge) — heavier, but
+   the mechanism is proven.
 2. Add a **`cellSync` LFQueue** push/pop round-trip (PPU enqueues work, SPU dequeues +
    processes + enqueues result) — the cellSync impl already exists; wire it to the SPU side.
 3. Stand up a minimal **`cellSpurs` taskset** that actually issues `sys_spu_thread_group_create`
