@@ -182,11 +182,21 @@ flOw's ENTIRE SPU set:
   (data-in-.text / a couple rare opcodes — not a blocker; a future disasm pass mops them up).
   So flOw's SPU ISA is essentially fully recompilable — piece #3's recompiler half is done.
 
-**What remains for rung 5 (the multi-week integration core, NOT yet done):**
-- Real `cellSpurs.c` (replace the `CELL_OK` stubs; issue `sys_spu_thread_group_create`, run
-  the lifted jobs as task bodies via the lv2 layer) — promote the rung-4 taskset into the runtime.
-- Wire the lv2 SPU-thread-group layer (`lv2_register.c`) to the lifted-execution layer with
-  per-job input data (the SPURS job descriptors flOw passes).
+**Rung 5 brick — lv2<->lifted adapter DONE (ps3recomp 1517882, SPU suite 9/9):** the
+lv2 SPU-thread-group layer runs SPU threads as registered PPU-fallbacks; the missing
+piece was running LIFTED code as that fallback. Added `runtime/spu/spu_lifted_job.h`
+(`spu_run_lifted_job`: runs a lifted spu_func with the SPURS task ABI — arg EA in r3,
+the thread's 256KB local store as LS) + `runtime/syscalls/spu_lifted_fallback.c` (wraps
+it to the lv2 fallback signature, registerable via `spu_register_ppu_fallback(image_entry,
+spu_lifted_fallback, lifted_fn)`). Test proves a lifted job runs with a PPU-supplied arg
+pointer. So lv2 can now execute lifted SPU jobs as task bodies — the rung-4 taskset and
+the lv2 thread-group layer can be joined to the lifted-execution layer.
+
+**What remains for rung 5 (the integration core, NOT yet done):**
+- Real `cellSpurs.c` (replace the `CELL_OK` stubs; issue `sys_spu_thread_group_create`,
+  register the lifted jobs via `spu_lifted_fallback`, dispatch flOw's SPURS workloads).
+- The cellSpurs/lv2/cellSync pieces all now exist; the remaining glue is flOw-specific
+  (which SPU image runs which workload, the job-descriptor layout flOw passes).
 - Piece #1 (un-bypass flOw's PPU boot so it reaches the real SPURS calls) + piece #2 (real
   cellFs serving `extracted/USRDIR/Data/`). These are the PPU-side blockers; until they land,
   flOw's own SPURS calls don't drive the now-proven SPU stack.
