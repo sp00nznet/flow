@@ -54,10 +54,44 @@ SPU half. The committed host-side scene-builder stays the visible stand-in meanw
    gameplay. Weeks; this is where the organism + particles become engine-driven, not
    host-synthesized.
 
-## First concrete step
+## Probe A — RESULT (2026-06-18, answered without a build)
 
-Run **Probe A**: in `libs/spurs/cellSpurs.c` + `libs/sync/cellSync.c`, make the
-workload-flag receiver and LFQueue pop return "ready/complete" immediately, rebuild flOw,
-and trace whether `func_000FC1F0` (the scene-config loader) is finally reached and whether
-the PPU then opens `Classes.xml`. That single experiment partitions the entire workstream
-into "coordination-only (cheap)" vs "needs real SPU (B1/B2)".
+Faking the SPU coordination is **moot**: our recomp's boot trace shows ONLY the pre-seed
+`cellSpursInitialize` — it never reaches `cellSpursWorkloadFlagReceiver`, the `cellSync`
+LFQueues, `sys_spu_thread_group_*`, or the real SPURS setup. **The divergence is upstream
+of the coordination, not at it.**
+
+What the working RPCS3 boot does that ours does NOT: at ~0:00:48 (right before the scene
+load) a tight burst — real SPURS setup (`cellSpursInitializeWithAttribute` + `CreateTaskset`
++ `AddWorkload`, not the plain `Initialize` our pre-seed uses), **330 `sys_fs_open`** (the
+whole asset-loading phase), 86 `sys_memory_allocate`, `sys_event_queue/port` setup, 1
+`sys_spu_initialize`. Our recomp does **0** `cellFs` calls and **0** real SPURS setup.
+
+**Root reframe:** our recomp runs flOw's hand-written **bypass loop** (the func_000C858C
+injection) instead of the natural engine-run that loads assets + drives SPU. So the gap
+isn't one gate — it's an **entire boot phase we never enter**. The host-side bypasses
+(scene-builder, vtable-forcing, SPURS pre-seed) keep flOw "alive"/rendering but on a
+dead-end path that diverges from the natural boot well before SPURS/asset-load.
+
+## Revised scope (bigger than one probe)
+
+Real engine-driven flOw needs THREE entangled pieces, not just "run the SPU":
+1. **Un-bypass the PPU boot** — let the natural engine-run reach the SPURS/asset-load phase
+   (now plausible post func_table-fix; the bypass was built for the broken-ctor era). This
+   is its own PPU-debugging effort: find why game-main's natural path doesn't enter the
+   ~48s asset/SPURS phase.
+2. **Serve file I/O** — real `cellFs` backed by `extracted/USRDIR/Data/` so the 330+ asset
+   opens (Classes.xml/first.xml/textures/sounds) succeed.
+3. **Run the SPU + wire coordination** — lift the ~30 SPU programs (spu_lifter), real
+   `cellSpurs` workload/taskset + `cellSync` LFQueue + workload-flag handshake.
+
+Estimate: multi-week re-architecture away from the host-synthesis approach. The committed
+host-side scene-builder remains the pragmatic visible stand-in.
+
+## Recommended next concrete step (cheap, build-free first)
+
+Use the RPCS3 oracle once more to find the FIRST divergence in the PPU boot: get a richer
+RPCS3 trace (raise cellFs/cellSpurs/PPU log levels), identify the function that drives the
+~48s asset/SPURS phase, and locate the equivalent point in our recomp to see exactly where
+the bypass takes over vs where the natural path continues. That pinpoints piece #1 (the
+PPU un-bypass) before committing to the SPU lift (#3).
