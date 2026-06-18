@@ -741,6 +741,50 @@ def print_stats(recomp_dir: str) -> None:
     print(f"    TODO instructions: {todo_count}")
 
 
+def patch_scene_builder(recomp_dir: str) -> int:
+    """Re-enable the synthetic scene-builder under natural GCM.
+
+    func_000C858C's injected per-frame loop has a gate
+
+        if (s_natural_gcm_active) goto skip_scene_builder;
+
+    that disables the data-driven scene-builder once the game installs its own
+    (natural) GCM context. After the func_table fix the engine reaches its
+    render loop but with an EMPTY scene graph (emits 0 RSX methods), so the GCM
+    command buffer is otherwise unused — letting the scene-builder run draws the
+    parsed flOw level (gradient / particles / snake) for visible output instead
+    of empty frames. Disable the gate so the scene-builder runs regardless.
+
+    Idempotent: only the active (uncommented) gate is matched, so re-running or
+    operating on an already-patched source is a no-op.
+    """
+    cpp_path = os.path.join(recomp_dir, "ppu_recomp.cpp")
+    with open(cpp_path, "rb") as f:
+        data = f.read()
+
+    target = b"                if (s_natural_gcm_active) goto skip_scene_builder;"
+    if target not in data:
+        print("  Scene-builder gate already disabled (or absent) — skipping")
+        return 0
+
+    replacement = (
+        b"                /* scene-builder re-enabled by post_lift: run even under\n"
+        b"                 * natural GCM. The engine reaches its render loop with an\n"
+        b"                 * empty scene graph (0 RSX methods), so the GCM buffer is\n"
+        b"                 * otherwise unused \xe2\x80\x94 draw the parsed level instead of\n"
+        b"                 * empty frames. */\n"
+        b"                /* if (s_natural_gcm_active) goto skip_scene_builder; */\n"
+        b"                (void)s_natural_gcm_active;"
+    )
+    data = data.replace(target, replacement, 1)
+
+    with open(cpp_path, "wb") as f:
+        f.write(data)
+
+    print("  Patched func_000C858C -> scene-builder runs under natural GCM")
+    return 1
+
+
 def main():
     parser = argparse.ArgumentParser(description="Post-lift processing for flOw")
     parser.add_argument("--recomp-dir", default="src/recomp",
@@ -782,6 +826,9 @@ def main():
 
     print("\n11. Patching PApplication BSS scan (one-shot instance search)")
     patch_papp_scan(recomp_dir)
+
+    print("\n12. Re-enabling scene-builder under natural GCM (visible level rendering)")
+    patch_scene_builder(recomp_dir)
 
     print_stats(recomp_dir)
     print("\nDone! Ready to build.")
