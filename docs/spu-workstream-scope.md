@@ -197,9 +197,10 @@ the lv2 thread-group layer can be joined to the lifted-execution layer.
   register the lifted jobs via `spu_lifted_fallback`, dispatch flOw's SPURS workloads).
 - The cellSpurs/lv2/cellSync pieces all now exist; the remaining glue is flOw-specific
   (which SPU image runs which workload, the job-descriptor layout flOw passes).
-- Piece #1 (un-bypass flOw's PPU boot so it reaches the real SPURS calls) + piece #2 (real
-  cellFs serving `extracted/USRDIR/Data/`). These are the PPU-side blockers; until they land,
-  flOw's own SPURS calls don't drive the now-proven SPU stack.
+- ~~Piece #2 (real cellFs serving `extracted/USRDIR/Data/`)~~ **DONE (ps3recomp 13c409c):**
+  sys_fs extracted-dump fallback; validated serving flOw's Classes.xml + first.xml.
+- Piece #1 (un-bypass flOw's PPU boot so it reaches the real SPURS calls) remains — the deep
+  RE blocker; until it lands, flOw's own SPURS calls don't drive the now-proven SPU stack.
 
 Net: the SPU half (recompiler + coordination primitives) is built, tested, and validated on
 flOw's real code across 4 rungs; the remaining work is wiring it into flOw's PPU boot — a
