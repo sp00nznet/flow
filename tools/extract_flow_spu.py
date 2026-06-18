@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Extract flOw's embedded SPU programs from the EBOOT and (optionally) lift each.
+
+flOw's PPU EBOOT embeds ~60 SPU ELFs (EM_SPU=23), ~30 unique. They must be
+unwrapped correctly before lifting: the file size must span the section *content*
+extents (max sh_offset+sh_size over non-NOBITS sections), not just the section-
+header table, or .symtab gets truncated and find_spu_functions crashes.
+
+Usage:
+    python tools/extract_flow_spu.py [--lift]
+Extracts to spu_extract/flow_spu_NN.elf; with --lift, runs ps3recomp's
+spu_lifter on each and reports coverage + any unsupported opcodes across the set.
+"""
+import struct, os, sys, hashlib, subprocess
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+FLOW = os.path.dirname(HERE)
+EBOOT = os.path.join(FLOW, "extracted", "USRDIR", "EBOOT.elf")
+OUTDIR = os.path.join(FLOW, "spu_extract")
+REPO = os.environ.get("PS3RECOMP_DIR", "D:/recomp/ps3")
+
+def elf_full_size(data, s):
+    """True on-disk size of the SPU ELF at offset s (covers section contents)."""
+    e_phoff, e_shoff = struct.unpack(">II", data[s+0x1C:s+0x24])
+    e_phentsize, e_phnum, e_shentsize, e_shnum = struct.unpack(">HHHH", data[s+0x2A:s+0x32])
+    end = e_shoff + e_shnum * e_shentsize
+    for k in range(e_phnum):
+        po = s + e_phoff + k*e_phentsize
+        p_offset, _, _, p_filesz = struct.unpack(">IIII", data[po+4:po+20])
+        end = max(end, p_offset + p_filesz)
+    for k in range(e_shnum):
+        so = s + e_shoff + k*e_shentsize
+        sh_type, = struct.unpack(">I", data[so+4:so+8])
+        sh_offset, sh_size = struct.unpack(">II", data[so+16:so+24])
+        if sh_type != 8:  # not SHT_NOBITS
+            end = max(end, sh_offset + sh_size)
+    return end
+
+def main():
+    do_lift = "--lift" in sys.argv
+    data = open(EBOOT, "rb").read()
+    offs, off = [], 0
+    while True:
+        i = data.find(b"\x7fELF", off)
+        if i < 0: break
+        if i+20 <= len(data) and struct.unpack(">H", data[i+18:i+20])[0] == 23:
+            offs.append(i)
+        off = i + 4
+    os.makedirs(OUTDIR, exist_ok=True)
+    seen, extracted = set(), []
+    for s in offs:
+        sz = elf_full_size(data, s)
+        blob = data[s:s+sz]
+        h = hashlib.md5(blob).hexdigest()
+        if h in seen: continue
+        seen.add(h)
+        path = os.path.join(OUTDIR, f"flow_spu_{len(extracted):02d}.elf")
+        open(path, "wb").write(blob)
+        extracted.append((path, sz))
+    print(f"Embedded SPU ELFs: {len(offs)}  unique: {len(extracted)}")
+
+    if not do_lift:
+        print("(run with --lift to recompile each)")
+        return
+    lifter = os.path.join(REPO, "tools", "spu_lifter.py")
+    ok, total_unsupported = 0, {}
+    for path, sz in extracted:
+        outd = path.replace(".elf", "_lifted")
+        r = subprocess.run([sys.executable, lifter, "--auto-functions", path,
+                            "--output", outd], capture_output=True, text=True)
+        out = r.stdout + r.stderr
+        cov = next((l for l in out.splitlines() if "coverage" in l.lower()), "")
+        unsup = [l for l in out.splitlines() if "unsupported" in l.lower() and "across" in l.lower()]
+        if "function(s) lifted" in out and not unsup:
+            ok += 1
+        for l in out.splitlines():
+            import re
+            m = re.match(r"\s+(\w+)\s+(\d+)\s*$", l)
+            if m and "unsupported" in out:
+                total_unsupported[m.group(1)] = total_unsupported.get(m.group(1), 0) + int(m.group(2))
+        print(f"  {os.path.basename(path)} ({sz:>6}B): "
+              f"{'OK' if not unsup else 'UNSUPPORTED'} {cov.strip()[:60]}")
+    print(f"\nLifted clean (no unsupported ops): {ok}/{len(extracted)}")
+    if total_unsupported:
+        print("Remaining unsupported opcodes:", total_unsupported)
+
+if __name__ == "__main__":
+    main()

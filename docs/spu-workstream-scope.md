@@ -165,3 +165,32 @@ AND signals completion — decoupled from flOw's boot.
    and runs a lifted job (replace the all-`CELL_OK` stubs). This is the rung that ties the
    lv2 SPU thread-group layer (lv2_register.c) to the lifted-execution layer (runtime/spu).
 Then integrate against flOw (piece #1 un-bypass + piece #2 cellFs).
+
+## Rung 4 + 5 progress (2026-06-18)
+
+**Rung 4 — cellSpurs taskset (ps3recomp f14c76d, 8/8):** a cellSpurs-style taskset drains
+a real cellSync LFQueue of N workloads and invokes a single lifted SPU task body per item
+(DMA workload → result → completion event). The SPURS work-engine model, end to end.
+
+**Rung 5 — flOw integration (started):** the SPU-RECOMPILATION half is now validated on
+flOw's ENTIRE SPU set:
+- Fixed the `frest` lifter gap (ps3recomp 7296bad) — flOw's SPU now lifts with zero
+  unsupported known opcodes and compiles clean.
+- Added `tools/extract_flow_spu.py` (the section-extent extractor, scope gap #1) and ran it:
+  **60 unique embedded SPU programs extracted; 58/60 lift completely clean**; the 2 largest
+  (the SPURS kernel, ~31KB/21KB) lift at 98.6% with only a handful of undecoded `.word`
+  (data-in-.text / a couple rare opcodes — not a blocker; a future disasm pass mops them up).
+  So flOw's SPU ISA is essentially fully recompilable — piece #3's recompiler half is done.
+
+**What remains for rung 5 (the multi-week integration core, NOT yet done):**
+- Real `cellSpurs.c` (replace the `CELL_OK` stubs; issue `sys_spu_thread_group_create`, run
+  the lifted jobs as task bodies via the lv2 layer) — promote the rung-4 taskset into the runtime.
+- Wire the lv2 SPU-thread-group layer (`lv2_register.c`) to the lifted-execution layer with
+  per-job input data (the SPURS job descriptors flOw passes).
+- Piece #1 (un-bypass flOw's PPU boot so it reaches the real SPURS calls) + piece #2 (real
+  cellFs serving `extracted/USRDIR/Data/`). These are the PPU-side blockers; until they land,
+  flOw's own SPURS calls don't drive the now-proven SPU stack.
+
+Net: the SPU half (recompiler + coordination primitives) is built, tested, and validated on
+flOw's real code across 4 rungs; the remaining work is wiring it into flOw's PPU boot — a
+real multi-week integration, but now with every lower-level piece proven green.
