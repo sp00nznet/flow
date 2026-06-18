@@ -155,8 +155,13 @@ AND signals completion — decoupled from flOw's boot.
    `push_by_id`/`receive`); PPU receives the completion event. Next: wire the REAL
    `sys_event.c` + lv2 `sys_spu_thread_group_*` layer (ppu_context bridge) — heavier, but
    the mechanism is proven.
-2. Add a **`cellSync` LFQueue** push/pop round-trip (PPU enqueues work, SPU dequeues +
-   processes + enqueues result) — the cellSync impl already exists; wire it to the SPU side.
+2. ~~Add a **`cellSync` LFQueue** push/pop round-trip (PPU enqueues work, SPU dequeues +
+   processes + enqueues result)~~ — **DONE (ps3recomp e524502, run_tests.sh 7/7).** Uses
+   the REAL `libs/sync/cellSync.c`: PPU `cellSyncLFQueuePush` -> queue buffer in shared mem
+   -> SPU DMA-reads + produces result + raises event -> PPU receives event + reads result +
+   `cellSyncLFQueuePop`. Full work-distribution round-trip. (Also taught `run_tests.sh`
+   per-test build deps so a test can link a libs/ HLE module.)
 3. Stand up a minimal **`cellSpurs` taskset** that actually issues `sys_spu_thread_group_create`
-   and runs a lifted job (replace the all-`CELL_OK` stubs).
+   and runs a lifted job (replace the all-`CELL_OK` stubs). This is the rung that ties the
+   lv2 SPU thread-group layer (lv2_register.c) to the lifted-execution layer (runtime/spu).
 Then integrate against flOw (piece #1 un-bypass + piece #2 cellFs).
