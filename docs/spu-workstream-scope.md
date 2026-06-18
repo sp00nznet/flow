@@ -137,3 +137,21 @@ The remaining effort is NOT the lifting — it's the **runtime integration**: re
 plumbing (`runtime/spu/` has the primitives), the LFQueue/workload-flag PPU↔SPU handshake,
 and getting the PPU off the bypass so it drives all this. That integration is the multi-week
 core; the SPU recompiler itself is ready.
+
+## Bring-up prototype — BUILT + PASSING (2026-06-18, ps3recomp commit cf478f7)
+
+Built the first integration unit (`runtime/spu/tests/gen_test_bringup.py` +
+`test_bringup_main.c`): a hand-assembled SPU program lifted to C (100% coverage) that
+writes a result into shared "main memory" via a DMA PUT, then signals the PPU via the
+outbound mailbox; the host harness verifies BOTH halves. Passes via `run_tests.sh` (5/5).
+This proves the core PPU↔SPU coordination handshake — SPU job produces shared-memory output
+AND signals completion — decoupled from flOw's boot.
+
+**Next concrete layers (build on this unit):**
+1. Wrap the mailbox signal in a **`sys_event_queue` + `sys_spu_thread_group_connect_event`**
+   path (flOw's actual completion mechanism) — minimal host harness, no game.
+2. Add a **`cellSync` LFQueue** push/pop round-trip (PPU enqueues work, SPU dequeues +
+   processes + enqueues result) — the cellSync impl already exists; wire it to the SPU side.
+3. Stand up a minimal **`cellSpurs` taskset** that actually issues `sys_spu_thread_group_create`
+   and runs a lifted job (replace the all-`CELL_OK` stubs).
+Then integrate against flOw (piece #1 un-bypass + piece #2 cellFs).
