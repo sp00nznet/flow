@@ -122,6 +122,32 @@ def load_names(path):
     return out
 
 
+def collect_external_funcs(out_path):
+    """Functions DEFINED in sibling .cpp files of the output dir.
+
+    ppu_recomp_patch*.cpp, missing_stubs.cpp, trampoline_stubs.cpp and
+    import_stubs.cpp each provide hand-edited / generated bodies for a set of
+    func_XXXX that are deliberately NOT emitted into ppu_recomp.cpp. The fresh
+    lifter re-emits some of them, so they must be excluded from the spliced
+    output or the link fails with duplicate-symbol errors. Scan the siblings
+    (everything in the out dir except the file we're writing) for definitions.
+    """
+    import os, glob
+    out_dir = os.path.dirname(os.path.abspath(out_path))
+    out_base = os.path.basename(out_path)
+    def_re = re.compile(r'^\s*void\s+(func_[0-9A-Fa-f]+)\s*\(\s*ppu_context', re.M)
+    provided = set()
+    files = []
+    for p in glob.glob(os.path.join(out_dir, '*.cpp')):
+        if os.path.basename(p) == out_base:
+            continue
+        files.append(os.path.basename(p))
+        with open(p, 'r', encoding='utf-8', errors='replace') as f:
+            provided.update(def_re.findall(f.read()))
+    print(f"External-provided funcs from {files}: {len(provided)} (excluded from output)")
+    return provided
+
+
 def main():
     base_path, fresh_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
     names_path = sys.argv[4] if len(sys.argv) > 4 else None
@@ -129,6 +155,8 @@ def main():
         base = f.read()
     with open(fresh_path, 'r', encoding='utf-8', errors='replace') as f:
         fresh = f.read()
+
+    external = collect_external_funcs(out_path)
 
     names = load_names(names_path) if names_path else {}
     if names:
@@ -141,7 +169,7 @@ def main():
     fresh_names = set(fresh_map)
     print(f"BASE funcs: {len(base_names)}  FRESH funcs: {len(fresh_names)}")
     print(f"  only in BASE:  {len(base_names - fresh_names)}  (kept verbatim)")
-    print(f"  only in FRESH: {len(fresh_names - base_names)}  (ignored)")
+    print(f"  only in FRESH: {len(fresh_names - base_names)}  (APPENDED at EOF)")
     sample_ob = sorted(base_names - fresh_names)[:8]
     if sample_ob:
         print("  sample only-BASE:", sample_ob)
@@ -180,6 +208,26 @@ def main():
         else:
             out_parts.append(annotate(name, base_block)); kept_same += 1
 
+    # Newly-discovered functions (jump-table case targets, prologue-recovered
+    # entries) exist only in FRESH. They are referenced by FRESH's func_table.cpp
+    # (g_recompiled_funcs) and by bl-targets inside replaced FRESH bodies, and
+    # declared in FRESH's ppu_recomp.h — so they MUST be emitted or the link
+    # breaks with undefined func_XXXX symbols. Append them at EOF (valid C++:
+    # the header provides their prototypes ahead of any reference).
+    appended = 0
+    excluded_ext = sorted((fresh_names - base_names) & external)
+    only_fresh = sorted((fresh_names - base_names) - external)
+    if excluded_ext:
+        print(f"  of only-FRESH, excluded as externally-provided: {len(excluded_ext)}")
+    if only_fresh:
+        out_parts.append(
+            "\n/* ===== Functions newly discovered by the re-lift "
+            "(jump-table case targets + prologue-recovered), absent from BASE. "
+            "Appended so func_table.cpp / bl-targets resolve. ===== */")
+        for name in only_fresh:
+            out_parts.append(annotate(name, fresh_map[name]))
+            appended += 1
+
     out = '\n'.join(out_parts)
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(out)
@@ -187,6 +235,7 @@ def main():
     print(f"Preserved hand-edited functions: {preserved_he}")
     print(f"Unchanged functions kept:        {kept_same}")
     print(f"Functions absent from FRESH kept: {no_fresh}")
+    print(f"New FRESH-only functions appended: {appended}")
     print(f"Name comments annotated:         {annotated}")
     print(f"Wrote {out_path} ({len(out)} bytes)")
 

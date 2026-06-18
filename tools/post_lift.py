@@ -286,6 +286,12 @@ def patch_malloc(recomp_dir: str) -> int:
         b"}\n"
     )
 
+    # Replace the function body FIRST, using the idx/end offsets computed on the
+    # original data. The decl insertion below shifts byte offsets near the top
+    # of the file, so it MUST come after this slice or idx/end go stale and the
+    # slice cuts mid-line (was corrupting the preceding trampoline).
+    data = data[:idx] + new_func + data[end:]
+
     # Add global declaration near top if not present
     decl = b'extern "C" void hle_guest_malloc(ppu_context* ctx);'
     if decl not in data[:10000]:
@@ -293,8 +299,6 @@ def patch_malloc(recomp_dir: str) -> int:
             b'#include "ppu_recomp.h"',
             b'#include "ppu_recomp.h"\nextern "C" void hle_guest_malloc(ppu_context* ctx);'
         )
-
-    data = data[:idx] + new_func + data[end:]
 
     with open(cpp_path, "wb") as f:
         f.write(data)
