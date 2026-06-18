@@ -335,6 +335,8 @@ extern "C" {
     uint32_t g_vt2_spin_mutex = 0;
     uint32_t g_vt2_spin_lr = 0;
 }
+/* C linkage to match the BASE lift's extern "C" definitions in ppu_recomp.cpp
+ * (main.cpp does not #include ppu_recomp.h, so declare the linkage explicitly). */
 extern "C" void func_000CB9CC(ppu_context* ctx);  /* game main */
 extern "C" void func_000CBF4C(ppu_context* ctx);  /* engine run/destroy wrapper → game loop injection */
 extern "C" void ps3_thread_entry(ppu_context* ctx);  /* thread entry trampoline */
