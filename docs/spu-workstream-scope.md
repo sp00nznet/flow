@@ -194,3 +194,14 @@ flOw's ENTIRE SPU set:
 Net: the SPU half (recompiler + coordination primitives) is built, tested, and validated on
 flOw's real code across 4 rungs; the remaining work is wiring it into flOw's PPU boot — a
 real multi-week integration, but now with every lower-level piece proven green.
+
+**EXECUTION validated on flOw's real SPU (2026-06-18):** `tools/flow_spu_run.c` runs one of
+flOw's real lifted SPU jobs (flow_spu_00, entry `spu_func_00000090` — a vector-math kernel:
+102 float-mul, 28 float-add, 36 shufb, 30 DMA) directly on the ps3recomp SPU runtime. It
+EXECUTES (lifted code runs: tag-status reads on `MFC_RdTagStat` ch24, MFC channel writes)
+and is watchdog-bounded because a cold run (no input) spins in a data-dependent loop — the
+loop bounds come from the SPURS job descriptor + input data the PPU side supplies. So
+flOw's real SPU code lifts AND executes on our runtime; running a job to completion needs
+the job input, i.e. the PPU↔SPU integration. The recompiler/runtime half is proven end to
+end on flOw's actual SPU; only the integration (cellSpurs/lv2 wiring feeding real workloads
++ un-bypass + cellFs) remains.
