@@ -8,6 +8,10 @@ Until now.
 
 This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC functions, lifts them to C, and links against [ps3recomp](https://github.com/sp00nznet/ps3recomp) — a set of HLE runtime libraries that replace the PS3 operating system with native host implementations. The result is a standalone Windows executable that runs flOw natively, no emulator required.
 
+![flOw running natively on Windows — Level 3](docs/flow_level3_rendering.png)
+
+*flOw's Level 3 rendering natively on Windows via static recompilation — the ocean gradient, drifting plankton, and the player organism (red), drawn through a D3D12 backend on top of the recompiled engine's own initialization.*
+
 ## Current Status
 
 | Metric | Value |
@@ -48,7 +52,7 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 | Engine game loop | **Running** | Continuous frame loop, ~88 FPS, 12 subsystems ticking each frame |
 | Natural cellGcmInit | **Working** | Game's own `_cellGcmInitBody` fires; cmdbuf 0x00C005E0–0x00CF05E0 |
 | Natural VBlank handler | **Working** | Game's `func_000CBE24` dispatched per frame via `g_ps3_guest_caller` |
-| GCM rendering | **Working** | D3D12 GPU: game's own surface clear (placeholder scene-builder gated off once natural ctx is live) |
+| GCM rendering | **Working** | D3D12 GPU: data-driven scene-builder draws the parsed level (gradient + plankton + organism) into the natural GCM context |
 | Buffer flips | **Working** | cellGcmSetFlipCommand alternating buffers 0/1, batched DRAW_ARRAYS |
 | Graphics backend | **D3D12** | Device FL11.0, vertex-colored PSO, 112KB VB, DrawInstanced, VSync |
 | Audio backend | **Wired** | cellAudio → WASAPI via ps3recomp |
