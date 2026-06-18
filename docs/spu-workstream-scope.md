@@ -88,10 +88,52 @@ Real engine-driven flOw needs THREE entangled pieces, not just "run the SPU":
 Estimate: multi-week re-architecture away from the host-synthesis approach. The committed
 host-side scene-builder remains the pragmatic visible stand-in.
 
-## Recommended next concrete step (cheap, build-free first)
+## Divergence diff — the exact missing-syscall checklist (2026-06-18)
 
-Use the RPCS3 oracle once more to find the FIRST divergence in the PPU boot: get a richer
-RPCS3 trace (raise cellFs/cellSpurs/PPU log levels), identify the function that drives the
-~48s asset/SPURS phase, and locate the equivalent point in our recomp to see exactly where
-the bypass takes over vs where the natural path continues. That pinpoints piece #1 (the
-PPU un-bypass) before committing to the SPU lift (#3).
+Set-difference of distinct HLE/syscall calls: WORKING boot makes 62, ours 43. Everything
+the working boot does that ours does ZERO of is one coherent subsystem — the SPU/SPURS/PRX
+bring-up:
+
+- **PRX loading:** `_sys_prx_load_module`, `_sys_prx_start_module`,
+  `_sys_prx_get_module_id_by_name` (dynamically loads libsre.sprx = SPURS runtime, etc.)
+- **SPU threads:** `sys_spu_initialize`, `sys_spu_thread_group_create`,
+  `sys_spu_thread_initialize`
+- **PPU↔SPU events:** `sys_event_queue_create`, `sys_event_port_create`,
+  `sys_event_port_connect_local`, `sys_spu_thread_group_connect_event(_all_threads)`
+- **Workers/mem:** `_sys_ppu_thread_create`, `sys_memory_container_create/destroy`
+- **Real SPURS init:** `cellSpursInitializeWithAttribute` + `CreateTaskset` + `AddWorkload`
+  (ours only ever does the injected pre-seed `cellSpursInitialize`)
+
+Our recomp makes NONE of these. Two compounding reasons: (1) it runs flOw's bypass loop, not
+the natural engine-run that performs the bring-up; (2) even the cellSpurs entry points are
+HLE-stubbed to `CELL_OK`, so they never issue the underlying sys_spu/sys_event syscalls.
+
+This is the concrete build checklist for the SPU bring-up (piece #3), and it confirms pieces
+#1 (un-bypass so the engine reaches these calls) and #2 (cellFs) must land too — the three
+are entangled and must come together; no single one unblocks alone. Realistic next move is
+to prototype the bring-up in isolation (real cellSpurs that issues sys_spu_thread_group_create
++ runs one lifted SPU program against shared LS↔XDR + signals via an event queue) as a unit
+test under runtime/spu/tests, decoupled from the flOw boot, then integrate.
+
+## SPU-lifting FEASIBILITY — VALIDATED on flOw's SPU code (2026-06-18)
+
+Extracted one of flOw's 60 embedded SPU ELFs (#3 @ EBOOT file-off 0x8D6F00) and ran the
+ps3recomp SPU pipeline end to end — **it works**:
+- `find_spu_functions`: text 0x80–0xA80 (640 instrs), 1 function detected, **97% coverage**.
+- `spu_lifter --auto-functions`: **639/640 instructions lifted to valid C** (128-bit GPRs,
+  `spu_ori/il/a/ai/shlqbyi`, `spu_ls_read128/write128` local-store DMA). **Only 1 unsupported
+  op: `frest`** (FP reciprocal estimate — trivial to add).
+
+So piece #3's hardest sub-part — recompiling the SPU ISA — is largely DONE and proven on
+flOw. Concrete tooling gaps found:
+1. **Embedded-ELF extraction:** sizing must use section *content* extents
+   (`max(sh_offset+sh_size)` over SHT≠NOBITS), not the section-header-table end, or `.symtab`
+   gets truncated and `read_symbols` crashes. Bake a flOw SPU-extractor that splits the
+   EBOOT's ~30 unique SPU ELFs.
+2. Add `frest` (+ likely `frsqest`/other estimate ops) to `spu_lifter`.
+
+The remaining effort is NOT the lifting — it's the **runtime integration**: real `cellSpurs`
+(issue the sys_spu/sys_event syscalls from the checklist), the LS↔XDR DMA + channel/event
+plumbing (`runtime/spu/` has the primitives), the LFQueue/workload-flag PPU↔SPU handshake,
+and getting the PPU off the bypass so it drives all this. That integration is the multi-week
+core; the SPU recompiler itself is ready.
