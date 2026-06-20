@@ -26,6 +26,7 @@ extern "C" {
     #include "runtime/ppu/ppu_context.h"
     #include "runtime/syscalls/lv2_syscall_table.h"
     #include "runtime/syscalls/sys_ppu_thread.h"
+    #include "runtime/prx/prx_loader.h"
 }
 /* Need the typedef for the thread entry function pointer */
 
@@ -445,6 +446,58 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 #endif
+
+/* ---------------------------------------------------------------------------
+ * Real system-PRX loading (libsre, ...)
+ *
+ * Brings the decrypted+relocated+lifted system PRX modules into the live
+ * process so flOw's cellSpurs/cellSync imports resolve into the REAL recompiled
+ * code (building real object/vtable graphs) instead of HLE stubs. See
+ * runtime/prx/prx_loader.h and the tools/prx_* pipeline.
+ * -----------------------------------------------------------------------*/
+
+/* libsre's namespaced lifted tables (defined in libsre_ns/ppu_recomp.c and
+ * libsre_exports.c, compiled into this project). Declared with prx_loader's
+ * layout-compatible types; extern "C" matches them to the generated symbols. */
+extern "C" const prx_func_entry libsre_function_table[];
+extern "C" const uint64_t        libsre_function_table_count;
+extern "C" const prx_export      libsre_exports[];
+extern "C" const uint32_t        libsre_export_count;
+
+extern "C" void dispatch_register_external(uint32_t addr, void (*func)(void*));
+
+static void flow_load_prx_modules(const char* game_dir)
+{
+    char path[600];
+    /* prx/ lives beside the game dir (flow/prx, game dir is flow/game). */
+    snprintf(path, sizeof(path), "%s/../prx/libsre.linked.bin", game_dir);
+
+    uint32_t sz = 0;
+    uint8_t* img = prx_image_load_file(path, &sz);
+    if (!img) {
+        fprintf(stderr, "[init] libsre image not found at %s — "
+                        "cellSpurs imports will use HLE stubs\n", path);
+        return;
+    }
+
+    prx_module m;
+    memset(&m, 0, sizeof(m));
+    m.name         = "libsre";
+    m.base         = 0x30000000;   /* must match the lift/relocate base */
+    m.image        = img;
+    m.image_size   = sz;
+    m.funcs        = libsre_function_table;
+    m.func_count   = libsre_function_table_count;
+    m.exports      = libsre_exports;
+    m.export_count = libsre_export_count;
+
+    prx_load_result r = prx_load_module(&m, dispatch_register_external);
+    if (!r.ok)
+        fprintf(stderr, "[init] libsre load FAILED\n");
+    /* image bytes are now copied into guest RAM; the buffer can be freed. */
+    free(img);
+}
+
 int main(int argc, char* argv[])
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -599,6 +652,12 @@ int main(int argc, char* argv[])
 
     /* 6. Report recompiled function table. */
     printf("[init] Loaded %zu recompiled functions\n", g_recompiled_func_count);
+
+    /* 6b. Load real system PRX modules (libsre) so cellSpurs/cellSync imports
+     * dispatch into real recompiled code instead of HLE stubs. Memory regions
+     * are committed (incl. the 0x30000000 PRX region) and the dispatch table is
+     * available, so registrations land and survive. */
+    flow_load_prx_modules(game_dir);
 
     /* 7. Set up PPU context and run. */
     printf("[init] Creating PPU context...\n");
