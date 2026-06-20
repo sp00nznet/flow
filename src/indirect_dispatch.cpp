@@ -114,6 +114,7 @@ extern uint32_t vm_read32(uint64_t addr);
 
 /* Public version for use from other translation units */
 extern "C" void dispatch_register_external(uint32_t addr, void (*func)(void*));
+static void dispatch_init(void);  /* forward decl — used by register_external */
 
 static void dispatch_register(uint32_t addr, void (*func)(void*))
 {
@@ -140,10 +141,12 @@ static void dispatch_register(uint32_t addr, void (*func)(void*))
 
 extern "C" void dispatch_register_external(uint32_t addr, void (*func)(void*))
 {
-    if (!s_dispatch_initialized) {
-        /* Defer — will be picked up when dispatch_init runs.
-         * For now, just force init. */
-    }
+    /* Must init first: dispatch_init() memsets the table and repopulates it
+     * from g_recompiled_funcs. If an external registration (e.g. a loaded PRX's
+     * functions) ran before init, that memset would wipe it. Force init here so
+     * external entries always land in an already-built table and survive. */
+    if (!s_dispatch_initialized)
+        dispatch_init();
     dispatch_register(addr, func);
 }
 
@@ -260,7 +263,9 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
         extern uint8_t* vm_base;
         extern uint32_t vm_read32(uint64_t addr);
 
-        if (target > 0 && target < 0x20000000 && vm_base) {
+        /* Upper bound covers the loaded-PRX region (0x30000000+) so virtual
+         * calls through a PRX object's OPD resolve instead of being rejected. */
+        if (target > 0 && target < 0x40000000 && vm_base) {
             uint32_t opd_func = vm_read32(target);
             uint32_t opd_toc  = vm_read32(target + 4);
 
@@ -285,7 +290,7 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
                             dispatch_lookup(next) ? "HIT" : "MISS");
                     fflush(stderr);
                 }
-                if (next == 0 || next >= 0x20000000) break;
+                if (next == 0 || next >= 0x40000000) break;
                 func = dispatch_lookup(next);
                 if (func) {
                     uint32_t next_toc = vm_read32(opd_func + 4);
@@ -442,7 +447,7 @@ done_dispatch: ;
         if (s_miss_count < 50) {
             extern uint32_t vm_read32(uint64_t addr);
             uint32_t opd_func = 0, opd_toc = 0;
-            if (target > 0 && target < 0x20000000) {
+            if (target > 0 && target < 0x40000000) {
                 opd_func = vm_read32(target);
                 opd_toc  = vm_read32(target + 4);
             }
@@ -537,7 +542,7 @@ extern "C" void ps3_thread_entry(ppu_context* ctx)
         /* Try OPD resolution */
         extern uint8_t* vm_base;
         extern uint32_t vm_read32(uint64_t addr);
-        if (entry > 0 && entry < 0x20000000 && vm_base) {
+        if (entry > 0 && entry < 0x40000000 && vm_base) {  /* incl. PRX region */
             uint32_t opd_func = vm_read32(entry);
             uint32_t opd_toc  = vm_read32(entry + 4);
             func = dispatch_lookup(opd_func);

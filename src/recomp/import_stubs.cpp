@@ -10,6 +10,13 @@
 extern "C" const char* failbit_resolve_rip(void* rip, uint32_t* out_guest);
 extern "C" int flow_repair_hle_modules(void);
 
+/* Real-PRX import resolution (runtime/prx/prx_loader). When a loaded system
+ * PRX (libsre/libresc/...) exports a NID flOw imports, we dispatch into the
+ * REAL recompiled module instead of the HLE stub. prx_resolve_export returns
+ * the export's guest OPD address, or 0 if no loaded module exports it. */
+extern "C" uint32_t prx_resolve_export(uint32_t nid);
+extern "C" void ps3_indirect_call(ppu_context* ctx);
+
 /* NID dispatch: look up handler and call it.
  *
  * IMPORTANT: Save current TOC (r2) to the caller's expected stack location
@@ -24,6 +31,32 @@ static void nid_dispatch(ppu_context* ctx, uint32_t nid, const char* name) {
 
     /* Also save LR — some callers restore LR from the stack after import calls */
     vm_write64((uint32_t)ctx->gpr[1] + 0x10, ctx->lr);
+
+    /* PRX-first: if a loaded module exports this NID, run the REAL code.
+     * The export resolves to an OPD {code, toc} in guest RAM. Read it directly
+     * and dispatch on the code address (which is registered in the dispatch
+     * table) with the module's own TOC, then restore the caller's TOC. This
+     * path needs no OPD-walk range check — the code address hits directly. */
+    uint32_t prx_opd = prx_resolve_export(nid);
+    if (prx_opd) {
+        uint32_t code = vm_read32(prx_opd);          /* OPD[0] = entry address */
+        uint32_t mtoc = vm_read32(prx_opd + 4);      /* OPD[1] = module TOC    */
+        static uint32_t s_seen[64] = {};
+        bool first = true;
+        for (uint32_t i = 0; i < 64 && s_seen[i]; i++)
+            if (s_seen[i] == nid) { first = false; break; }
+        if (first) {
+            for (uint32_t i = 0; i < 64; i++) if (!s_seen[i]) { s_seen[i] = nid; break; }
+            fprintf(stderr, "[PRX] %s -> libsre OPD 0x%08X (code 0x%08X toc 0x%08X)\n",
+                    name, prx_opd, code, mtoc);
+            fflush(stderr);
+        }
+        ctx->gpr[2] = mtoc;
+        ctx->ctr = code;
+        ps3_indirect_call(ctx);
+        ctx->gpr[2] = saved_toc;   /* restore caller (flOw) TOC */
+        return;
+    }
 
     void* handler = ps3_resolve_func_nid(nid);
     if (!handler) {

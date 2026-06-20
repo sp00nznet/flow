@@ -46,3 +46,13 @@ extracted/*.AT3
 crack_extracted/
 flOw PSN [NPUA-80001]/
 spu_extract/
+
+# Real system-PRX modules: decrypted Sony firmware (.prx/.sprx), relocated
+# binary images (.linked.bin), and their lifted/generated namespaced sources.
+# All regenerable via the ps3recomp tools/prx_* pipeline; never commit firmware.
+prx/
+
+# Build + run logs from iterative bring-up
+build_*.log
+run_*.out
+run_*.err

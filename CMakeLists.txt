@@ -84,6 +84,25 @@ file(GLOB_RECURSE RECOMP_SOURCES
     "src/recomp/*.cpp"
 )
 
+# Real system-PRX modules (libsre, ...). Each was relocated at a fixed base and
+# lifted with a per-module symbol prefix (libsre_*) so it links alongside the
+# title without func_*/function_table collisions. The runtime PRX loader places
+# the relocated image into guest RAM and registers these tables. See the
+# tools/prx_* pipeline and runtime/prx/prx_loader.
+file(GLOB PRX_MODULE_SOURCES
+    "prx/libsre_ns/ppu_recomp.c"
+    "prx/libsre_ns/libsre_exports.c"
+    "prx/libsre_ns/libsre_externs.cpp"
+)
+if(PRX_MODULE_SOURCES)
+    message(STATUS "Found real-PRX modules: ${PRX_MODULE_SOURCES}")
+    # The lifted module sources use C++ constructs (extern "C", the thread-local
+    # g_trampoline_fn) exactly like the title's own ppu_recomp.cpp, but the
+    # lifter emits a .c extension. Force C++ so MSVC doesn't compile them as C.
+    # (runtime/prx/prx_loader.c stays C — it needs C linkage for vm_base.)
+    set_source_files_properties(${PRX_MODULE_SOURCES} PROPERTIES LANGUAGE CXX)
+endif()
+
 # If the recompiler has generated code, tell stubs.cpp to exclude placeholders
 if(RECOMP_SOURCES)
     message(STATUS "Found recompiled sources (${CMAKE_CURRENT_SOURCE_DIR}/src/recomp/)")
@@ -107,11 +126,14 @@ add_executable(flow
     src/indirect_dispatch.cpp
     src/flow_level.cpp
     ${RECOMP_SOURCES}
+    ${PRX_MODULE_SOURCES}
+    "${PS3RECOMP_DIR}/runtime/prx/prx_loader.c"
 )
 
 target_include_directories(flow PRIVATE
     "${PS3RECOMP_DIR}/include"
     "${PS3RECOMP_DIR}"
+    "${PS3RECOMP_DIR}/runtime/prx"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/recomp"
 )
