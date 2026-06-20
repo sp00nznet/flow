@@ -12,6 +12,10 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 
 *flOw's Level 3 rendering natively on Windows via static recompilation — the ocean gradient, drifting plankton, and the player organism (red), drawn through a D3D12 backend on top of the recompiled engine's own initialization.*
 
+![flOw rendering with the real libsre PRX loaded](docs/flow_prx_default.png)
+
+*A deeper level, captured from the v0.6.0 build — drifting plankton and a school of orange creature organisms over the ocean gradient. This boot loads the **real decrypted `libsre.prx`**: flOw's `cellSpurs`/`cellSync` imports now dispatch into genuinely recompiled Sony library code (relocated, lifted, and namespaced) instead of HLE stubs, eliminating the `0x01000000` unresolved-PRX spin that previously blocked SPURS construction.*
+
 ## Current Status
 
 | Metric | Value |
@@ -96,7 +100,7 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 
 ### Known Issues
 
-- **Title-state wall** — engine alive but state machine doesn't progress. Disasm-verified: natural `func_000C858C` is one-shot shutdown, not a loop. The natural per-frame outer loop must come from a worker thread spawned by init code we don't reach. `sys_ppu_thread_create` is never called naturally; `cellHddGameCheck` / `cellFsOpen` / `cellPadGetData` zero calls. Our `for(;;)` substitutes for the missing worker — works for ticking but doesn't trigger the state machine.
+- **Title-state wall** — engine alive but state machine doesn't progress. Disasm-verified: natural `func_000C858C` is one-shot shutdown, not a loop. The natural per-frame outer loop must come from a worker thread spawned by init code we don't reach. `sys_ppu_thread_create` is never called naturally; `cellHddGameCheck` / `cellFsOpen` / `cellPadGetData` zero calls. Our `for(;;)` substitutes for the missing worker — works for ticking but doesn't trigger the state machine. **v0.6.0 update:** with real libsre loaded, force-calling game-main-init `func_00268504` with the correct init state (`r3=0`) now runs the subsystem-construction sequence *cleanly* (no more `0x01000000`/OOM) — the upstream construction the bypass skipped. The remaining gap: driving the state machine's later phases (`r3=1` still reads partly-unconstructed objects) and populating the UI-handler slot `0x10164D20` (never written; its writer is still untraced).
 - **`func_00810BB8` is `__cxa_pure_virtual`** — engine vtable[2] is the abstract-method abort stub. Confirmed via disasm. Calling it always aborts. Kept disabled.
 - **`func_00138B7C` → `cellHddGameCheck` path** — gated by `sys_memory_container_create` (syscall 0x155); failure jumps to `func_001392F0` which calls cellHddGameCheck with a callback OPD at `r30 + -0x7DDC`. Reaching it from our injection point needs `r30` = a game-state struct we haven't synthesized.
 - **Render method callbacks** — Engine vtable[2] disabled; our scene-builder gated off once natural GCM ctx is live.
@@ -303,6 +307,15 @@ flow/
 This project does not contain any proprietary Sony code, game binaries, encryption keys, or copyrighted game assets. It is a clean-room reimplementation of PS3 system libraries paired with automated binary translation tools. Users must supply their own legally obtained copy of flOw.
 
 ## Changelog
+
+### v0.6.0 — Real System PRX: libsre cellSpurs (2026-06-19)
+- **Loads the real decrypted `libsre.prx`** — Sony's cellSpurs/cellSync library is relocated at a fixed guest base (`0x30000000`), lifted to per-module-namespaced C, and copied into guest RAM at boot by a new runtime PRX loader. **1003 functions registered, 269 exports published.**
+- **cellSpurs imports resolve into real recompiled code** — `nid_dispatch` now consults a NID→export registry first; **17 of flOw's imports (all 14 cellSpurs + 3 cellSync barriers) dispatch into libsre** via its OPDs instead of HLE stubs, with the module's own TOC.
+- **Eliminated the `0x01000000` spin in the cellSpurs object graph** — the unresolved-dynamic-PRX-placeholder virtual call that blocked SPURS construction is gone; the real `cellSpursInitialize` runs and builds a real vtable graph.
+- **SCE PPU relocation format fully decoded** — relocations are segment-relative on *both* ends (`r_info` packs patched- and symbol-segment indices). A whole class of seg1 relocations (OPDs, TOC pointers) had been silently misapplied to seg0; fixing it made the export OPDs resolve correctly.
+- **Game-main-init state bug found** — `func_00268504` is a state machine: `r3=1` skips construction (reads uninitialized objects → `0x01000000` garbage + OOM), while `r3=0` runs the subsystem-construction sequence the boot bypass had been skipping — now cleanly, with no garbage, no OOM, no spin.
+- **Hand-edit force-calls characterized** — the SPURS-SEED / WORKER-WAKE / SPU-init force-calls are now runtime-toggleable (env vars) and confirmed non-load-bearing for the frame loop; the synthetic SPURS seed is superseded by the real library.
+- **ps3recomp sister repo — new PRX toolchain**: `tools/prx_relocate.py` (segment-aware relocator), `tools/prx_exports.py` (NID→addr export tables), `ppu_lifter --symbol-prefix` (multi-image linking), `elf_parser` module_info/export fixes, and `runtime/prx/prx_loader` (load + register + resolve). End-to-end tested against real libsre.
 
 ### v0.5.0 — Natural Init + SPU Foundation (2026-04-29)
 - **Natural `_cellGcmInitBody` fires** — game's own GCM init runs to completion: cmdbuf at 0x00C005E0–0x00CF05E0 (960 KB), VBlank handler installed, FlipMode set, double-buffered, IO mapping done.
