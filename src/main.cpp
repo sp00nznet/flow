@@ -13,6 +13,7 @@
 /* ps3recomp runtime headers */
 #include <ps3emu/ps3types.h>
 #include <ps3emu/error_codes.h>
+#include <ps3emu/endian.h>   /* ps3_bswap* (portable byte swap) */
 
 #include <cstdio>
 #include <cstdlib>
@@ -140,6 +141,7 @@ extern "C" volatile size_t   g_watch_size = 0;
 
 /* Install a hardware write-watchpoint of the given size (1, 2, 4 or 8) on
  * `addr`. Uses DR0 + DR7 condition bits; only one watchpoint at a time. */
+#ifdef _WIN32
 extern "C" int flow_install_watchpoint(void* addr, size_t size)
 {
     if (size != 1 && size != 2 && size != 4 && size != 8) return -1;
@@ -252,6 +254,21 @@ extern "C" void flow_install_watch_veh(void)
     fprintf(stderr, "[WATCH] VEH installed\n");
     fflush(stderr);
 }
+#else  /* POSIX: hardware watchpoints rely on x86 debug registers via thread
+        * CONTEXT, which has no portable equivalent. Provide no-op stubs so
+        * callers still compile/link. */
+extern "C" int flow_install_watchpoint(void* addr, size_t size)
+{
+    (void)addr; (void)size;
+    /* TODO(linux): hardware watchpoints via ptrace/perf_event not implemented */
+    return 0;
+}
+
+extern "C" void flow_install_watch_veh(void)
+{
+    /* TODO(linux): no vectored exception handler equivalent; no-op */
+}
+#endif  /* _WIN32 (watchpoint support) */
 
 /* RIP -> nearest recompiled guest function. Used by debugging hooks
  * outside this TU (e.g. failbit-throw stack trace in ppu_recomp.cpp).
@@ -318,7 +335,12 @@ extern "C" uint32_t g_gcm_context_guest;
 extern "C" void hle_gcm_install_cmdbuf(uint32_t ctx_addr, uint32_t buf_addr, uint32_t buf_size);
 
 /* Trampoline continuation (from indirect_dispatch.cpp) */
+/* TLS storage class differs between Windows (__declspec(thread)) and POSIX. */
+#ifdef _WIN32
 extern "C" __declspec(thread) void (*g_trampoline_fn)(void*);
+#else
+extern "C" __thread void (*g_trampoline_fn)(void*);
+#endif
 
 /* Abort redirect (from hle_modules.cpp) */
 #include <setjmp.h>
@@ -809,7 +831,7 @@ int main(int argc, char* argv[])
         ctx.gpr[13] = 0x0F007000; /* TLS */
         ctx.lr = 0x008175FC;       /* sys_process_exit stub */
         {
-            uint64_t toc_be = _byteswap_uint64(ctx.gpr[2]);
+            uint64_t toc_be = ps3_bswap64(ctx.gpr[2]);
             memcpy(vm_base + (uint32_t)ctx.gpr[1] + 0x28, &toc_be, 8);
         }
         /* Re-initialize TLS from the ELF's PT_TLS template.
@@ -847,7 +869,7 @@ int main(int argc, char* argv[])
         ctx.gpr[13] = 0x0F007000;
         ctx.lr = 0x008175FC;
         {
-            uint64_t toc_be = _byteswap_uint64(ctx.gpr[2]);
+            uint64_t toc_be = ps3_bswap64(ctx.gpr[2]);
             memcpy(vm_base + (uint32_t)ctx.gpr[1] + 0x28, &toc_be, 8);
         }
         fprintf(stderr, "[init] Stack cleaned, SP=0x%08X\n", (uint32_t)ctx.gpr[1]);
@@ -869,7 +891,13 @@ int main(int argc, char* argv[])
 
         g_abort_redirect = 99;  /* prevent further redirects */
 
-        /* Watchdog: sample execution state periodically */
+        /* Watchdog: sample execution state periodically.
+         * This is a pure debug aid built on Windows thread suspension +
+         * thread CONTEXT inspection (SuspendThread/GetThreadContext). There is
+         * no trivial POSIX equivalent, so on Linux we simply skip the watchdog.
+         * TODO(linux): reimplement watchdog sampling via a pthread + signal or
+         * /proc-based stack inspection if this diagnostic is needed. */
+#ifdef _WIN32
         static volatile ppu_context* g_watchdog_ctx = &ctx;
         {
             HANDLE hMainThread = GetCurrentThread();
@@ -1004,6 +1032,7 @@ int main(int argc, char* argv[])
                 return 0;
             }, hReal, 0, NULL);
         }
+#endif  /* _WIN32 (watchdog thread) */
 
         /* Arm the game-main assertion bailout. If game main hits its SPU
          * thread group join assertion (or any other exit(1) path), the
@@ -1047,7 +1076,7 @@ int main(int argc, char* argv[])
             ctx.gpr[2]  = 0x008969A8;
             ctx.gpr[13] = 0x0F007000;
             ctx.lr      = 0x008175FC;
-            uint64_t toc_be = _byteswap_uint64(ctx.gpr[2]);
+            uint64_t toc_be = ps3_bswap64(ctx.gpr[2]);
             memcpy(vm_base + (uint32_t)ctx.gpr[1] + 0x28, &toc_be, 8);
 
             /* Plant the engine pointer at the BSS slot that TOC-0x55EC
