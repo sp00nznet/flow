@@ -324,7 +324,11 @@ static int64_t bridge_sys_lwmutex_create(ppu_context* ctx)
     fprintf(stderr, "[HLE] sys_lwmutex_create(mutex=0x%x, attr=0x%x)\n",
             mutex_addr, attr_addr);
 
-    if (!mutex_addr || mutex_addr > 0x20000000) {
+    /* Accept the full guest address range (stack ~0xC0..0xD0, heap/general up to
+     * 0xC0000000). The old 0x20000000 cap wrongly rejected stack/heap mutexes
+     * (e.g. 0xC6A9DC68) -> CELL_EFAULT -> the game retried forever (boot spin).
+     * vm_write below bounds-checks, so a real OOB address is still safe. */
+    if (!mutex_addr || mutex_addr >= 0xFF000000u) {
         fprintf(stderr, "[HLE]   ERROR: invalid mutex address 0x%08X\n", mutex_addr);
         ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x80010002; /* CELL_EFAULT */
         return 0;
@@ -332,7 +336,7 @@ static int64_t bridge_sys_lwmutex_create(ppu_context* ctx)
 
     /* Read attribute from guest memory, or use defaults if attr is NULL */
     sys_lwmutex_attribute_t attr;
-    if (attr_addr && attr_addr < 0x20000000) {
+    if (attr_addr && attr_addr < 0xFF000000u) {
         attr.protocol  = vm_read32(attr_addr);
         attr.recursive = vm_read32(attr_addr + 4);
         memcpy(attr.name, guest_ptr(attr_addr + 8), 8);
@@ -706,7 +710,8 @@ static int64_t bridge_cellVideoOutGetState(ppu_context* ctx)
         vm_write8(state_addr + 1, host_state.colorSpace);
         /* reserved[6] at offset 2 */
         memset((uint8_t*)guest_ptr(state_addr) + 2, 0, 6);
-        vm_write32(state_addr + 8, host_state.displayMode);
+        /* displayMode is now an 8-byte CellVideoOutDisplayModeBytes struct (was u32) */
+        memcpy((uint8_t*)guest_ptr(state_addr) + 8, &host_state.displayMode, sizeof(host_state.displayMode));
     }
 
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
@@ -1546,17 +1551,13 @@ static int64_t bridge_cellGcmGetLabelAddress(ppu_context* ctx)
 /* cellGcmGetTiledPitchSize(size, pitch_ptr) */
 static int64_t bridge_cellGcmGetTiledPitchSize(ppu_context* ctx)
 {
+    /* Real ABI: u32 cellGcmGetTiledPitchSize(u32 size) — returns the pitch directly in r3. */
     uint32_t size       = (uint32_t)ctx->gpr[3];
-    uint32_t pitch_addr = (uint32_t)ctx->gpr[4];
 
-    uint32_t host_pitch = 0;
-    s32 rc = cellGcmGetTiledPitchSize(size, &host_pitch);
+    uint32_t host_pitch = cellGcmGetTiledPitchSize(size);
 
-    if (rc == CELL_OK && pitch_addr)
-        vm_write32(pitch_addr, host_pitch);
-
-    ctx->gpr[3] = (uint64_t)(int64_t)rc;
-    return rc;
+    ctx->gpr[3] = (uint64_t)host_pitch;
+    return 0;
 }
 
 /* Flush the guest command buffer — process RSX commands and reset write pointer.
@@ -2345,7 +2346,8 @@ static int64_t bridge_cellNetCtlInit(ppu_context* ctx)
 static int64_t bridge_cellNetCtlTerm(ppu_context* ctx)
 {
     (void)ctx;
-    int32_t rc = cellNetCtlTerm();
+    cellNetCtlTerm();               /* returns void in current runtime */
+    int32_t rc = 0;
     ctx->gpr[3] = (uint64_t)(int64_t)rc;
     return 0;
 }

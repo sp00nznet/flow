@@ -56,3 +56,76 @@ prx/
 build_*.log
 run_*.out
 run_*.err
+
+# ---- session scratch / logs / intermediate artifacts (added 2026-07-15) ----
+# Redirected run logs and ad-hoc dumps
+_*.err
+_*.out
+*_stderr.txt
+*_stdout.txt
+*_stderr.png
+output*.txt
+*.log
+full_trace.txt
+combined_output.txt
+final_std*.txt
+fresh_std*.txt
+cr_std*.txt
+engvt_std*.txt
+missing_regs.txt
+krn_args.txt
+ctor_test.txt
+_ctor_full.txt
+log.txt
+
+# Generated recompiler output (regenerate from the function-list JSON via ppu_lifter.py)
+src/recomp_v2/
+src/recomp_v3/
+src/recomp_v4/
+src/recomp.bak/
+src/recomp.*/
+
+# Extra build trees
+build_*/
+
+# Editor/tool backups & binary dumps
+*.bak
+crt.bin
+*.bin
+
+# Screenshots / captures at repo root (docs/ screenshots are tracked)
+/*.png
+/*.PNG
+
+# Analysis scratch
+analysis/
+ghidra_out/
+ghidra_run.log
+"flOw PSN [NPUA-80001]/"
+
+# Intermediate function lists (canonical = flow_funcs_v4_WORKING.json)
+flow_funcs_clean.json
+flow_funcs_full.json
+flow_funcs_opdfix.json
+flow_funcs_opd_nextend.json
+combined_functions_extended.json
+constructor_functions.json
+config_relift.toml
+relift*.txt
+run_*.txt
+run_std*.txt
+*.err
+*.out
+stderr*.txt
+stdout*.txt
+*.tmp
+tools/__pycache__/
+tools/*.exe
+ghidra_run.log
+survey_strings.py
+vfs/
+src/recomp_fresh/
+src/recomp_v2.relift/
+src/recomp/
+screenshot.ps1
+smoke_relift.ps1

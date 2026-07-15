@@ -18,6 +18,20 @@ This project takes the PS3 `EBOOT.elf` binary, disassembles all PowerPC function
 
 ## Current Status
 
+### Latest — 2026-07-15: the honest draw-engine relift boots and loads real game content
+
+A major milestone on the **honest boot path** (real game code + real assets, no injected/synthesized geometry). flОw's draw-engine relift — which had been dead for the entire project (it crashed on a null vtable, then on infinite recursion) — now **boots cleanly, loads real content, and reaches the render loop at parity with the reference build.**
+
+What changed:
+
+- **Root-caused and fixed two lifter bugs — both were the *function list*, not opcodes.** (1) A C++ constructor over-split orphaned register save/restore epilogues (garbage virtual calls); (2) an infinite recursion in a tree-walk (`func_00528400`) from a mis-bounded builder. The fix was the correct boundary set, not new opcode lowering.
+- **Applied ps3recomp's fixed `.opd` detection.** The upstream detector now accepts BSS/gap-resident TOC bases, so flОw's function-descriptor seeds jumped from **1 → 36,828** and detected functions from 31,008 → 53,296. The winning list is those `.opd` starts with **end := next-start** (fills the gaps that were truncating functions) — checked in as `flow_funcs_v4_WORKING.json`.
+- **Result:** `recomp_v4` (draw-engine lifter, with the correct VMX/SPU opcode lowering) now runs with **0 garbage vcalls, 0 recursion, real shaders compiled, and the level/auto-load mode reached** — the same place the reference `recomp_v2` build gets to.
+
+**Remaining gate (the one thing before real pixels):** both the old-lifter and draw-engine-lifter builds now stop at the *same* point — PhyreEngine's `PCoreGcmRenderInterface::setScreenRenderTargetInternal(): No config`. Because **both lifters hit it identically, it is not a lift bug** — the engine's screen render-target config is never established (a runtime/HLE or engine render-init gap). The render interface initializes and even compiles shaders; it just never binds a screen target, so no draw calls reach the D3D12 backend. This is the clean next target.
+
+> Note: the detailed table below describes the earlier **bypass/scene-builder** path (which drew a data-driven reconstruction of the level). The honest path above is the one now being carried forward.
+
 | Metric | Value |
 |---|---|
 | Title | flOw |

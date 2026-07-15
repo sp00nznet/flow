@@ -301,3 +301,41 @@ extern "C" void lv2_syscall(ppu_context* ctx)
         ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)(-17);
     }
 }
+
+/* ---- dynamic stack-imbalance detector (sp_check) -------------------------
+ * SPCALL (injected at lifted bl call-sites) reports when a subroutine call
+ * returns with sp changed -> a recompilation stack-imbalance bug. Deduped by
+ * (function,delta) so a boot yields a clean list. */
+extern "C" void sp_leak_report(const char* fn, unsigned before, unsigned after)
+{
+    int delta = (int)(after - before);
+    static struct { const char* fn; int d; } seen[8192];
+    static int n = 0;
+    for (int i = 0; i < n; i++)
+        if (seen[i].d == delta && strcmp(seen[i].fn, fn) == 0) return;
+    if (n < 8192) { seen[n].fn = fn; seen[n].d = delta; n++; }
+    fprintf(stderr, "[SPLEAK] %s  sp 0x%08X -> 0x%08X  delta=%d\n",
+            fn, before, after, delta);
+    fflush(stderr);
+}
+
+/* spcall: wraps a lifted bl call-site, draining trampolines and checking sp
+ * balance. Used by the SPCALL macro injected into chunks for the dynamic audit. */
+extern "C" __declspec(thread) void (*g_trampoline_fn)(void*);
+extern "C" void spcall(void (*fn)(void*), ppu_context* ctx, const char* name)
+{
+    unsigned sb = (unsigned)ctx->gpr[1];
+    uint64_t saved[18];                         /* r14-r31, callee-saved */
+    for (int i = 0; i < 18; i++) saved[i] = ctx->gpr[14 + i];
+    fn((void*)ctx);
+    while (g_trampoline_fn) { void (*tf)(void*) = g_trampoline_fn; g_trampoline_fn = 0; tf((void*)ctx); }
+    unsigned sa = (unsigned)ctx->gpr[1];
+    if (sa != sb) {
+        /* A bl must preserve sp + r14-r31. A mismatch is a recompilation
+         * stack-imbalance bug; restoring to the pre-call values just enforces
+         * the ABI (always safe), masking the bug class at runtime. */
+        sp_leak_report(name, sb, sa);
+        ctx->gpr[1] = sb;
+        for (int i = 0; i < 18; i++) ctx->gpr[14 + i] = saved[i];
+    }
+}
