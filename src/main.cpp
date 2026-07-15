@@ -44,6 +44,12 @@ extern "C" uint8_t* vm_base = nullptr;
 /* Also aliased as vm::g_base for C++ vm::ptr<T> */
 namespace vm { uint8_t* g_base = nullptr; }
 
+/* Guest VM size for the runtime's optional OOB bounds checks (ppu_fs/sys_*).
+ * The runtime declares this extern; ppu_loader.cpp would define it, but flОw
+ * provides its own vm accessors and doesn't compile that scaffold. 0 == unchecked,
+ * matching the vm accessors' prior behavior (the boot scaffold sets it when used). */
+extern "C" uint32_t ppu_vm_size = 0;
+
 /* LV2 syscall dispatch table (declared extern in lv2_syscall_table.h) */
 lv2_syscall_table g_lv2_syscalls;
 
@@ -335,6 +341,26 @@ extern "C" {
     int g_vt2_in_progress = 0;
     uint32_t g_vt2_spin_mutex = 0;
     uint32_t g_vt2_spin_lr = 0;
+    /* Timeout watchdog: the current runtime STALLS in boot (PhyreEngine/lwmutex)
+     * instead of hitting the thread_get_id spin the redirect was tuned for, so
+     * that redirect never fires. This flag, set by a watchdog thread after the
+     * boot has run long enough to construct the engine, is checked in the hot
+     * hle_guest_malloc hook (main thread) to force the render-injection redirect. */
+    volatile int g_watchdog_fire = 0;
+}
+#include <windows.h>
+static DWORD WINAPI flow_boot_watchdog(LPVOID param) {
+    unsigned secs = (unsigned)(uintptr_t)param;
+    /* Fire repeatedly: stage 1 (first stall) -> redirect/re-run; the re-run needs
+     * ~secs to construct the engine (hook consumes the flag), then stage 2 (re-run
+     * stall) -> g_loop_jmp render injection. */
+    for (int stage = 0; stage < 6; stage++) {
+        Sleep(secs * 1000);
+        fprintf(stderr, "[WATCHDOG] fire #%d (after %us) -> forcing render path\n", stage, secs);
+        fflush(stderr);
+        g_watchdog_fire = 1;   /* main thread's next malloc hook acts + clears it */
+    }
+    return 0;
 }
 /* C linkage to match the BASE lift's extern "C" definitions in ppu_recomp.cpp
  * (main.cpp does not #include ppu_recomp.h, so declare the linkage explicitly). */
@@ -657,7 +683,14 @@ int main(int argc, char* argv[])
      * dispatch into real recompiled code instead of HLE stubs. Memory regions
      * are committed (incl. the 0x30000000 PRX region) and the dispatch table is
      * available, so registrations land and survive. */
-    flow_load_prx_modules(game_dir);
+    /* FLOW_NO_LIBSRE: skip real libsre so cellSpurs falls to HLE stubs. The
+     * current runtime's libsre cellSpurs init spins in sys_lwmutex_create
+     * (drift since these screenshots were made); the flow_level render injection
+     * doesn't need real cellSpurs, so skipping it lets boot reach the render. */
+    if (!getenv("FLOW_NO_LIBSRE"))
+        flow_load_prx_modules(game_dir);
+    else
+        printf("[init] libsre SKIPPED (FLOW_NO_LIBSRE) -> HLE cellSpurs\n");
 
     /* 7. Set up PPU context and run. */
     printf("[init] Creating PPU context...\n");
@@ -754,6 +787,16 @@ int main(int argc, char* argv[])
     }
 
     printf("[init] Entering game at 0x%X...\n\n", FLOW_ENTRY_POINT);
+
+    /* FLOW_WATCHDOG=<secs>: start a timeout watchdog that forces the render
+     * injection if the boot stalls (current runtime doesn't hit the thread_get_id
+     * spin the redirect was tuned for). Default 90s. */
+    {
+        const char* wd = getenv("FLOW_WATCHDOG");
+        unsigned secs = wd ? (unsigned)atoi(wd) : 90;
+        if (secs)
+            CreateThread(NULL, 0, flow_boot_watchdog, (LPVOID)(uintptr_t)secs, 0, NULL);
+    }
 
     /* Run the CRT startup.  If constructors crash (page fault on
      * uncommitted pages) → SEH catches → CRT eventually calls

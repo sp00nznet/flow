@@ -1,199 +1,123 @@
+# flОw (NPUA80001, thatgamecompany / PhyreEngine) — clean PPU boot harness.
+#
+# Proper static-recomp boot: wires the fresh lifter output (src/recomp_v2) to the
+# generic first-boot harness (runtime/ppu/tests/boot_main.cpp): load the real
+# EBOOT -> register lifted functions + HLE NID handlers -> run real boot code from
+# _start through the game's own CRT/ctors. NO bypass/redirect/inject machinery
+# (that was the old CMakeLists.hacked.bak). Real game data loads via the cellFs
+# VFS (PS3_VFS_ROOT). Optional real cellSpurs via libsre (YDKJ_LIBSRE=1).
+#
+# Toolchain: clang-cl (boot harness uses __builtin_bswap + weak symbols MSVC lacks).
+#   cmake -S . -B build_boot -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+#   cmake --build build_boot
+#   ./build_boot/flow_boot game/EBOOT.elf
 cmake_minimum_required(VERSION 3.20)
-project(flow_recomp
-    VERSION 0.1.0
-    LANGUAGES C CXX
-    DESCRIPTION "flOw - Static recompilation of the PS3 game (NPUA80001)"
-)
+project(flow_boot CXX C)
 
-set(CMAKE_C_STANDARD 17)
-set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 17)
 
-# Prefer Ninja if available
-if(NOT CMAKE_GENERATOR MATCHES "Ninja" AND NOT DEFINED ENV{CMAKE_GENERATOR})
-    message(STATUS "Tip: use -G Ninja for faster builds")
-endif()
+# draw-engine worktree: caner's PPU/SPU lifter correctness + sagemono's RSX->D3D12
+# draw engine (per-draw VP/FP programs, RTT/MRT, viewport-Z). Relift required to
+# pick up the lifter fixes -- see src/recomp_v3.
+set(PS3RECOMP_DIR "D:/recomp/ps3-draw" CACHE PATH "ps3recomp repo root")
+set(PS3RECOMP_RUNTIME_LIB "${PS3RECOMP_DIR}/build/Release/ps3recomp_runtime.lib"
+    CACHE FILEPATH "prebuilt runtime library")
 
-# ---------------------------------------------------------------------------
-# Options
-# ---------------------------------------------------------------------------
-set(FLOW_GAME_DIR_OPT "${CMAKE_CURRENT_SOURCE_DIR}/game" CACHE PATH
-    "Path to game data directory")
+# Lifted game code. RECOMP_SRC_DIR selects the lift: recomp_v3 (draw-engine relift)
+# by default; -DRECOMP_SRC_DIR=src/recomp_v2 builds the old lift for isolation.
+set(RECOMP_SRC_DIR "src/recomp_v3" CACHE STRING "lifted-source dir")
+file(GLOB RECOMP_SOURCES "${RECOMP_SRC_DIR}/*.c" "${RECOMP_SRC_DIR}/*.cpp")
+file(GLOB GEN_SOURCES    "src/gen/*.cpp")
 
-# ---------------------------------------------------------------------------
-# ps3recomp SDK location
-# ---------------------------------------------------------------------------
-# Set PS3RECOMP_DIR to the root of your ps3recomp checkout, or pass it on
-# the command line:   cmake -DPS3RECOMP_DIR=/path/to/ps3recomp ..
-if(NOT DEFINED PS3RECOMP_DIR)
-    # Default: assume ps3recomp is a sibling directory (../ps3)
-    get_filename_component(PS3RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ps3" ABSOLUTE)
-endif()
-message(STATUS "ps3recomp SDK: ${PS3RECOMP_DIR}")
-
-# ---------------------------------------------------------------------------
-# ps3recomp runtime library
-# ---------------------------------------------------------------------------
-# If the runtime has already been built, use it.  Otherwise, build from source.
-set(PS3RECOMP_RUNTIME_DIR "${PS3RECOMP_DIR}/build" CACHE PATH
-    "Directory containing the pre-built ps3recomp_runtime library")
-
-# Check multiple possible library locations (single-config and multi-config builds)
-set(_PS3R_LIB_CANDIDATES
-    "${PS3RECOMP_RUNTIME_DIR}/ps3recomp_runtime.lib"
-    "${PS3RECOMP_RUNTIME_DIR}/Release/ps3recomp_runtime.lib"
-    "${PS3RECOMP_RUNTIME_DIR}/Debug/ps3recomp_runtime.lib"
-    "${PS3RECOMP_RUNTIME_DIR}/libps3recomp_runtime.a"
-)
-set(_PS3R_FOUND_LIB "")
-foreach(_lib ${_PS3R_LIB_CANDIDATES})
-    if(EXISTS "${_lib}")
-        set(_PS3R_FOUND_LIB "${_lib}")
-        break()
-    endif()
-endforeach()
-
-if(_PS3R_FOUND_LIB)
-    message(STATUS "Found ps3recomp runtime: ${_PS3R_FOUND_LIB}")
-    add_library(ps3recomp_runtime STATIC IMPORTED GLOBAL)
-    set_target_properties(ps3recomp_runtime PROPERTIES
-        IMPORTED_LOCATION "${_PS3R_FOUND_LIB}")
-    # For MSVC multi-config, set per-config locations
-    if(EXISTS "${PS3RECOMP_RUNTIME_DIR}/Release/ps3recomp_runtime.lib")
-        set_target_properties(ps3recomp_runtime PROPERTIES
-            IMPORTED_LOCATION_RELEASE "${PS3RECOMP_RUNTIME_DIR}/Release/ps3recomp_runtime.lib")
-    endif()
-    if(EXISTS "${PS3RECOMP_RUNTIME_DIR}/Debug/ps3recomp_runtime.lib")
-        set_target_properties(ps3recomp_runtime PROPERTIES
-            IMPORTED_LOCATION_DEBUG "${PS3RECOMP_RUNTIME_DIR}/Debug/ps3recomp_runtime.lib")
-    endif()
-    target_include_directories(ps3recomp_runtime INTERFACE
-        "${PS3RECOMP_DIR}/include")
-else()
-    message(STATUS "Building ps3recomp runtime from source")
-    add_subdirectory("${PS3RECOMP_DIR}" "${CMAKE_BINARY_DIR}/ps3recomp_sdk"
-                     EXCLUDE_FROM_ALL)
-endif()
-
-# ---------------------------------------------------------------------------
-# Recompiled game code (generated by tools/recompile.py)
-# ---------------------------------------------------------------------------
-file(GLOB_RECURSE RECOMP_SOURCES
-    "src/recomp/*.c"
-    "src/recomp/*.cpp"
-)
-
-# Real system-PRX modules (libsre, ...). Each was relocated at a fixed base and
-# lifted with a per-module symbol prefix (libsre_*) so it links alongside the
-# title without func_*/function_table collisions. The runtime PRX loader places
-# the relocated image into guest RAM and registers these tables. See the
-# tools/prx_* pipeline and runtime/prx/prx_loader.
+# Real system-PRX module: libsre (Sony cellSpurs/cellSync), lifted + namespaced
+# (libsre_* prefix). The runtime PRX loader places the relocated image into guest
+# RAM and registers its exports so cellSpurs imports dispatch into real recompiled
+# Sony code (gated at runtime by YDKJ_LIBSRE=1; default falls back to HLE stubs).
+# The lifted .c uses C++ constructs -> force C++.
 file(GLOB PRX_MODULE_SOURCES
     "prx/libsre_ns/ppu_recomp.c"
     "prx/libsre_ns/libsre_exports.c"
     "prx/libsre_ns/libsre_externs.cpp"
 )
 if(PRX_MODULE_SOURCES)
-    message(STATUS "Found real-PRX modules: ${PRX_MODULE_SOURCES}")
-    # The lifted module sources use C++ constructs (extern "C", the thread-local
-    # g_trampoline_fn) exactly like the title's own ppu_recomp.cpp, but the
-    # lifter emits a .c extension. Force C++ so MSVC doesn't compile them as C.
-    # (runtime/prx/prx_loader.c stays C — it needs C linkage for vm_base.)
     set_source_files_properties(${PRX_MODULE_SOURCES} PROPERTIES LANGUAGE CXX)
 endif()
 
-# If the recompiler has generated code, tell stubs.cpp to exclude placeholders
-if(RECOMP_SOURCES)
-    message(STATUS "Found recompiled sources (${CMAKE_CURRENT_SOURCE_DIR}/src/recomp/)")
-    set(FLOW_HAS_RECOMP TRUE)
-else()
-    message(STATUS "No recompiled sources found -- using stubs")
-    set(FLOW_HAS_RECOMP FALSE)
-endif()
+# Firmware SPU kernel (libsre's cellSpurs SPU program: kernel/policy/task layers).
+# The runtime SPU dispatcher (runtime/spu/spu_workload.c) hard-references the
+# policy entry tsp_spu_func_00000A00, so the title must provide these lifts.
+# Firmware-version-close, reused from the YDKJ sister-project (same as libsre).
+file(GLOB SPU_KERNEL_SOURCES
+    "prx/spu_kernel/lift_a/spu_recomp.c"
+    "prx/spu_kernel/lift_pol/spu_recomp.c"
+    "prx/spu_kernel/lift_tsp/spu_recomp.c"
+)
 
-# ---------------------------------------------------------------------------
-# Main executable
-# ---------------------------------------------------------------------------
-add_executable(flow
-    src/main.cpp
-    src/stubs.cpp
-    src/elf_loader.cpp
-    src/vm_bridge.cpp
-    src/hle_modules.cpp
-    src/malloc_override.cpp
-    src/run_ctors.cpp
-    src/indirect_dispatch.cpp
-    src/flow_level.cpp
+# flОw's OWN SPURS workload modules — the SPU programs the game hands to
+# cellSpursAddWorkload (pm=0x10062600/0x10063900/0x10067400/0x1010EC00). These are
+# RAW SPU images (no ELF header), which is why the old ELF-magic extractor missed
+# them and the 60 lifted `spu_extract/flow_spu_*` images never covered them. Lifted
+# with distinct symbol prefixes (wl0_..wl3_) so all four co-link.
+file(GLOB FLOW_SPU_WORKLOAD_SOURCES
+    "spu_extract/workloads/flow_wl_0_62600_lifted/spu_recomp.c"
+    "spu_extract/workloads/flow_wl_1_63900_lifted/spu_recomp.c"
+    "spu_extract/workloads/flow_wl_2_67400_lifted/spu_recomp.c"
+    "spu_extract/workloads/flow_wl_3_10EC00_lifted/spu_recomp.c"
+)
+
+add_executable(flow_boot
+    "${PS3RECOMP_DIR}/runtime/ppu/tests/boot_main.cpp"   # generic boot harness
+    "${PS3RECOMP_DIR}/runtime/ppu/ppu_loader.cpp"        # vm + ELF loader + run
+    "${PS3RECOMP_DIR}/runtime/ppu/ppu_hle.cpp"           # NID -> handler dispatch
+    "${PS3RECOMP_DIR}/runtime/ppu/ppu_sysprx.cpp"        # boot-critical CRT
+    "${PS3RECOMP_DIR}/runtime/ppu/ppu_fs.cpp"            # cellFs VFS
+    "${PS3RECOMP_DIR}/runtime/syscalls/sys_fs.c"         # sys_fs syscalls (override prebuilt for instrumentation)
+    "${PS3RECOMP_DIR}/libs/system/cellSaveData.c"        # override prebuilt: guest-EA dirName translation fix
+    "${PS3RECOMP_DIR}/libs/video/cellVideoOut.c"         # override prebuilt: GetState.state ENABLED(0) not PREPARING(2) -> PhyreEngine builds display config
+    "${PS3RECOMP_DIR}/runtime/prx/prx_loader.c"          # real-PRX loader (libsre)
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/malloc_hle.cpp"     # guest allocator HLE (heap init)
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/prx_init.cpp"       # libsre load hook (real cellSpurs)
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/flow_spurs_kernel.c"  # run the lifted SPURS SPU kernel
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/flow_extra_nids.cpp"  # wire missing HLE NIDs (cellGcmSetFlip, cellPadGetInfo, ...)
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/flow_run_ctors.cpp"   # explicit static-ctor runner (lifted .init_array skips some)
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/flow_spu_workloads.c" # RUN flОw's SPURS workloads (HLE records but never executes them)
+    # Override the prebuilt lib's copy: spu_dma.h gained the policy-image registry
+    # (switch SPU image_id when the kernel DMAs a policy to LS 0xA00) and this TU
+    # inlines the MFC path. Without recompiling it here the lib's stale copy runs.
+    # (spu_workload.c is NOT overridden — it has a type conflict in this include
+    # context; the registry is implemented in flow_spu_workloads.c instead.)
+    "${PS3RECOMP_DIR}/runtime/spu/spu_channels.c"
+    ${GEN_SOURCES}
     ${RECOMP_SOURCES}
+    ${SPU_KERNEL_SOURCES}
+    ${FLOW_SPU_WORKLOAD_SOURCES}
     ${PRX_MODULE_SOURCES}
-    "${PS3RECOMP_DIR}/runtime/prx/prx_loader.c"
+    # libsre (real cellSpurs) NOW INCLUDED — PhyreEngine PSSG needs the real CellSpurs
+    # struct layout (HLE simplified struct can't satisfy it). Gate runtime: YDKJ_LIBSRE=1. — libsre links against
+    # the SPU kernel lift (tsp/pol/a layers) flОw doesn't have yet. First boot uses
+    # the weak no-op ps3_load_prx_modules -> cellSpurs falls to runtime HLE stubs +
+    # the SPU group tracker. Re-add ${PRX_MODULE_SOURCES} + prx_init.cpp + the SPU
+    # kernel sources once we lift them (then enable with YDKJ_LIBSRE=1).
 )
 
-target_include_directories(flow PRIVATE
-    "${PS3RECOMP_DIR}/include"
-    "${PS3RECOMP_DIR}"
+# Every libs/* subdir (the generated NID table #includes each module's header).
+file(GLOB LIB_INC_DIRS LIST_DIRECTORIES true "${PS3RECOMP_DIR}/libs/*")
+
+target_include_directories(flow_boot PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/compat"             # <dirent.h>/<unistd.h> Win shims
+    "${CMAKE_CURRENT_SOURCE_DIR}/${RECOMP_SRC_DIR}"      # ppu_recomp.h
+    "${PS3RECOMP_DIR}/runtime/ppu"
+    "${PS3RECOMP_DIR}/runtime/spu"
     "${PS3RECOMP_DIR}/runtime/prx"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/recomp"
+    "${PS3RECOMP_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/prx/libsre_ns"          # libsre ppu_recomp.h
+    ${LIB_INC_DIRS}
 )
 
-target_link_libraries(flow PRIVATE
-    ps3recomp_runtime
-)
-
-# Pass game data path as a compile definition
-target_compile_definitions(flow PRIVATE
-    FLOW_GAME_DIR="${FLOW_GAME_DIR_OPT}"
-    FLOW_TITLE_ID="NPUA80001"
-    $<$<BOOL:${FLOW_HAS_RECOMP}>:FLOW_HAS_RECOMP>
-)
-
-# ---------------------------------------------------------------------------
-# Platform libraries
-# ---------------------------------------------------------------------------
+target_link_libraries(flow_boot PRIVATE "${PS3RECOMP_RUNTIME_LIB}")
 if(WIN32)
-    target_link_libraries(flow PRIVATE
-        ws2_32 xinput ole32 bcrypt d3d12 dxgi uuid dxguid
-    )
+    target_link_libraries(flow_boot PRIVATE ws2_32 bcrypt d3d12 dxgi dxguid d3dcompiler)
+    # Deep recompiled call chains nest on the host stack; reserve 256 MB.
+    target_link_options(flow_boot PRIVATE /STACK:268435456 /MAP:flow.map)
 endif()
-
-# ---------------------------------------------------------------------------
-# Compiler flags
-# ---------------------------------------------------------------------------
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(flow PRIVATE
-        -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable
-        -fno-strict-aliasing
-    )
-elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-    target_compile_options(flow PRIVATE
-        -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable
-        -fno-strict-aliasing
-    )
-elseif(MSVC)
-    target_compile_options(flow PRIVATE
-        /W3 /wd4100 /wd4244 /wd4267 /wd4996 /wd4013
-        /Zc:__cplusplus
-        /bigobj
-    )
-    # 256 MB native stack — recompiled split-function chains create very deep
-    # call stacks that exceed the default 1 MB.
-    target_link_options(flow PRIVATE /STACK:0x40000000)
-    target_compile_definitions(flow PRIVATE
-        _CRT_SECURE_NO_WARNINGS
-    )
-endif()
-
-# ---------------------------------------------------------------------------
-# Install
-# ---------------------------------------------------------------------------
-install(TARGETS flow RUNTIME DESTINATION bin)
-
-message(STATUS "")
-message(STATUS "flOw recomp v${PROJECT_VERSION}")
-message(STATUS "  Game dir:     ${FLOW_GAME_DIR_OPT}")
-message(STATUS "  ps3recomp:    ${PS3RECOMP_DIR}")
-message(STATUS "  C++ compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
-message(STATUS "  Build type:   ${CMAKE_BUILD_TYPE}")
-message(STATUS "")

@@ -433,9 +433,33 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
             }
             /* Always restore TOC to game's known value (single-module) */
             ctx->gpr[2] = 0x008969A8;
-            /* Restore SP if it was corrupted (sign extension) */
-            if ((ctx->gpr[1] >> 32) != 0 && (ctx->gpr[1] >> 32) != 0xFFFFFFFF)
+            /* r1/SP MUST be preserved across a call (PPC ABI). If the target
+             * drifted it — a lifter stack-imbalance on a computed-bctr / tail-call
+             * path that dropped the epilogue — restore it. This globally immunizes
+             * every indirect/virtual call against the r1-drift corruption class
+             * (the flОw deserializer frame-overlap root). */
+            if ((uint32_t)ctx->gpr[1] != (uint32_t)saved_sp) {
+                if (getenv("FLOW_R1DRIFT")) { static int _n=0; if(_n++<40)
+                    fprintf(stderr,"[R1DRIFT] target=0x%08X drifted r1 0x%08X->0x%08X (restored)\n",
+                            target,(uint32_t)saved_sp,(uint32_t)ctx->gpr[1]); }
                 ctx->gpr[1] = saved_sp;
+            } else if ((ctx->gpr[1] >> 32) != 0 && (ctx->gpr[1] >> 32) != 0xFFFFFFFF)
+                ctx->gpr[1] = saved_sp;
+#ifdef _WIN32
+            /* Callee-saved GPRs r14-r31 MUST be preserved across a call (PPC ABI).
+             * A target with the computed-bctr/tail-call epilogue bug leaks them just
+             * like it leaks r1 (e.g. func_000BE6E8's 2nd vcall crashed because its
+             * `this`=r31 was clobbered by the 1st vcall's target). Restore them from
+             * the pre-call snapshot — globally immunizes vcalls against reg leaks. */
+            {
+                int _leak = 0;
+                for (int _r = 14; _r <= 31; _r++) {
+                    if (ctx->gpr[_r] != saved_ctx.gpr[_r]) { _leak = 1; ctx->gpr[_r] = saved_ctx.gpr[_r]; }
+                }
+                if (_leak && getenv("FLOW_R1DRIFT")) { static int _n=0; if(_n++<40)
+                    fprintf(stderr,"[CSLEAK] target=0x%08X leaked a callee-saved reg (restored)\n", target); }
+            }
+#endif
         }
         if (s_call_count <= 20) {
             fprintf(stderr, "[dispatch] returned from 0x%08X\n", target);

@@ -18,9 +18,32 @@ static const uint32_t g_heap_end = 0x10000000;
 static uint32_t g_alloc_count = 0;
 
 /* HLE malloc — called from patched func_006B738C */
+#include <setjmp.h>
+extern "C" { extern jmp_buf g_abort_jmp; extern int g_abort_redirect; extern volatile int g_watchdog_fire;
+             extern jmp_buf g_loop_jmp; extern int g_loop_jmp_set; }
+
 extern "C" void hle_guest_malloc(ppu_context* ctx);
 void hle_guest_malloc(ppu_context* ctx)
 {
+    /* Timeout watchdog fired (boot stalled). Force the render path from here
+     * (main thread). Two stages, matching the bypass's redirect design:
+     *   1. First boot stall -> longjmp(g_abort_jmp) -> reset+reload+re-run game
+     *      main (which constructs the engine).
+     *   2. Re-run stall (g_loop_jmp armed) -> longjmp(g_loop_jmp) -> fall through
+     *      to the game-loop injection (func_000C858C render). */
+    if (g_watchdog_fire) {
+        if (g_loop_jmp_set) {
+            g_watchdog_fire = 0;
+            longjmp(g_loop_jmp, 1);            /* -> render injection */
+        } else if (g_abort_redirect == 0) {
+            g_watchdog_fire = 0;
+            g_abort_redirect = 1;
+            longjmp(g_abort_jmp, 1);           /* -> redirect / re-run */
+        } else {
+            g_watchdog_fire = 0;               /* between stages: consume, wait for next fire */
+        }
+    }
+
     uint32_t size = (uint32_t)ctx->gpr[3];
     size = (size + 15) & ~15u;
     if (size == 0) size = 16;
