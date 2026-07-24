@@ -17,16 +17,20 @@ project(flow_boot CXX C)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_C_STANDARD 17)
 
-# draw-engine worktree: caner's PPU/SPU lifter correctness + sagemono's RSX->D3D12
-# draw engine (per-draw VP/FP programs, RTT/MRT, viewport-Z). Relift required to
-# pick up the lifter fixes -- see src/recomp_v3.
+# ps3-draw worktree, branch `ps3recomp` (supersedes draw-engine): caner's PPU/SPU
+# lifter correctness + NID fixes, sagemono's RSX->D3D12 draw engine (per-draw VP/FP
+# programs, RTT/MRT, viewport-Z), the SPU interpreter/self-mod path, sys_fs
+# transient-open retries, serialized vblank/flip delivery, and the merged `ydkj`
+# SPURS work (7-arg cellSpursCreateTask, BE cellSpursEventFlag, taskset context).
+# Relift required to pick up the lifter fixes -- see src/recomp_v5.
 set(PS3RECOMP_DIR "D:/recomp/ps3-draw" CACHE PATH "ps3recomp repo root")
 set(PS3RECOMP_RUNTIME_LIB "${PS3RECOMP_DIR}/build/Release/ps3recomp_runtime.lib"
     CACHE FILEPATH "prebuilt runtime library")
 
-# Lifted game code. RECOMP_SRC_DIR selects the lift: recomp_v3 (draw-engine relift)
-# by default; -DRECOMP_SRC_DIR=src/recomp_v2 builds the old lift for isolation.
-set(RECOMP_SRC_DIR "src/recomp_v3" CACHE STRING "lifted-source dir")
+# Lifted game code. RECOMP_SRC_DIR selects the lift: recomp_v5 (find_functions +
+# gap-filled list + jump-table-base fix -- drives the app loop) by default;
+# -DRECOMP_SRC_DIR=src/recomp_v2 builds the old lift for isolation.
+set(RECOMP_SRC_DIR "src/recomp_v5" CACHE STRING "lifted-source dir")
 file(GLOB RECOMP_SOURCES "${RECOMP_SRC_DIR}/*.c" "${RECOMP_SRC_DIR}/*.cpp")
 file(GLOB GEN_SOURCES    "src/gen/*.cpp")
 
