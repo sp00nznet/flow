@@ -42,6 +42,11 @@ extern "C" {
     void cellAudioOutGetSoundAvailability(void);
     void cellSysmoduleInitialize(void);
     void cellAudioOutConfigure(void);
+    /* sceNpBasic: flОw polls GetEvent every app-loop iteration to drain NP
+     * notifications. Both ignore/only-store their guest-EA args, so registering
+     * them raw is safe (no host-deref of a guest pointer). */
+    void sceNpBasicGetEvent(void);
+    void sceNpBasicRegisterHandler(void);
 }
 
 /* FLOW_GUARDVT=<hex>: arm the runtime page-guard on this .bss vtable slot at the
@@ -106,6 +111,13 @@ struct FlowExtraNids {
          * policy module DMAs the first 0x80 bytes of the instance and reads them
          * as the real Sony scheduling header. Overwrite with the real layout. */
         ps3_hle_register_ctx(0xACFC8DBCu, "cellSpursInitialize",         flow_spurs_initialize_wrap);
+        /* sceNpBasicGetEvent: unresolved, it fell through to the generic
+         * gpr[3]=0 (CELL_OK) path -- which tells the game "an event IS ready".
+         * The game then reads a stale/garbage event out-param and loops forever,
+         * parking the app loop. The real handler returns SCE_NP_BASIC_ERROR_NO_EVENT
+         * (0x8002A66A), the value the drain loop (func_00063E34) checks to exit. */
+        ps3_hle_register(0xE035F7D6u, "sceNpBasicGetEvent",             (void*)sceNpBasicGetEvent);
+        ps3_hle_register(0xBCC09FE7u, "sceNpBasicRegisterHandler",      (void*)sceNpBasicRegisterHandler);
     }
 } g_flow_extra_nids;
 }
