@@ -244,8 +244,9 @@ cd flow
 python tools/recompile.py --functions-file combined_functions.json \
     --skip-find --ps3recomp-dir ../ps3
 
-# Patch generated header (runtime ppu_context + extern C)
-# (see src/recomp/ppu_recomp.h for required modifications)
+# Patch the generated header (runtime ppu_context + extern C):
+# tools/post_lift.py does it. src/recomp/ is made on your machine by these
+# steps and is never committed.
 
 # Build
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DPS3RECOMP_DIR=../ps3
@@ -305,6 +306,9 @@ flow/
 ## Legal
 
 This project does not contain any proprietary Sony code, game binaries, encryption keys, or copyrighted game assets. It is a clean-room reimplementation of PS3 system libraries paired with automated binary translation tools. Users must supply their own legally obtained copy of flOw.
+
+The code in this repo is MIT: see [LICENSE](LICENSE). The lifted code
+(`src/recomp/`) is generated locally from your own copy and never committed.
 
 ## Changelog
 
